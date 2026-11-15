@@ -55,35 +55,51 @@ function disconnected() {
   $('connect').hidden = false
   $('connection').hidden = false
 }
+async function executeInMessenger(script) {
+  const results = await api.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    ...script,
+  })
+  const injection = results[0]
+  if (!injection) throw Error('Browser returned no script execution result.')
+  if (injection.error != null)
+    throw Error(String(injection.error.message || injection.error))
+  return injection.result
+}
 async function rpc(action, args = {}) {
-  let results
+  let result
   try {
-    results = await api.scripting.executeScript({
-      target: { tabId },
-      world: 'MAIN',
-      func: (action, args, account) =>
-        globalThis.MessengerArchivePage?.call(action, args, account),
+    result = await executeInMessenger({
+      func: (action, args, account) => {
+        if (typeof globalThis.MessengerArchivePage?.call !== 'function')
+          return {
+            ok: false,
+            code: 'DISCONNECTED',
+            error:
+              'Messenger archive helper is missing from the page. Retry the connection.',
+          }
+        return globalThis.MessengerArchivePage.call(action, args, account)
+      },
       args: [action, args, account || null],
     })
-  } catch {
+  } catch (e) {
     disconnected()
     throw Object.assign(
-      Error(
-        'Messenger disconnected. Open Messenger, then retry the connection.',
-      ),
+      Error(`Messenger request failed (${action}): ${e.message || e}`),
       { code: 'DISCONNECTED' },
     )
   }
-  const result = results[0]?.result
   if (!result) {
     disconnected()
     throw Object.assign(
-      Error('Messenger reloaded. Retry the connection to resume.'),
+      Error(`Messenger returned no reply to ${action}. Retry the connection.`),
       { code: 'DISCONNECTED' },
     )
   }
   if (!result.ok) {
-    if (result.code === 'ACCOUNT_CHANGED') disconnected()
+    if (['ACCOUNT_CHANGED', 'DISCONNECTED'].includes(result.code))
+      disconnected()
     throw Object.assign(Error(result.error), { code: result.code })
   }
   return result.value
@@ -546,11 +562,16 @@ async function connect(preferredTab) {
       say('Open Messenger and sign in to begin.')
       return
     }
-    await api.scripting.executeScript({
-      target: { tabId },
-      world: 'MAIN',
-      files: ['src/core.js', 'src/adapter.js'],
-    })
+    // Firefox resolves unprefixed paths relative to assets/panel.html.
+    for (const file of ['/src/core.js', '/src/adapter.js']) {
+      try {
+        await executeInMessenger({ files: [file] })
+      } catch (e) {
+        throw Error(
+          `Could not load Messenger helper (${file}): ${e.message || e}`,
+        )
+      }
+    }
     const probe = await rpc('probe')
     if (probe.missing.length)
       throw Error(

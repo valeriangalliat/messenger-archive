@@ -60,8 +60,19 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
   globalThis.browser = {
     tabs: { query: async () => [{ id: 1 }], onUpdated: { addListener() {} } },
     scripting: {
-      async executeScript({ args }) {
-        if (!args) return []
+      async executeScript({ args, files }) {
+        if (!args) {
+          // Match Firefox's URL resolution from the nested archive page.
+          for (const file of files) {
+            const path = new URL(file, location.href).pathname
+            try {
+              await readFile(new URL(`..${path}`, import.meta.url))
+            } catch (e) {
+              return [{ frameId: 0, error: e.message }]
+            }
+          }
+          return [{ frameId: 0 }]
+        }
         const [action, values] = args
         calls.push([action, values])
         let value
@@ -398,5 +409,84 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
   assert.match($('status').textContent, /another extension tab/)
   assert.equal($('start').disabled, false)
   assert.equal($('cleanup').disabled, false)
+  assert.equal((await db.storageUsage()).attachmentBytes, 1)
+
+  // Firefox can resolve executeScript with an error on the individual result.
+  // Report the failing helper and stop before probing or opening storage.
+  const executeScript = browser.scripting.executeScript
+  for (const file of ['/src/core.js', '/src/adapter.js']) {
+    const injected = []
+    browser.scripting.executeScript = async (options) => {
+      const current = options.files?.[0]
+      if (current) injected.push(current)
+      if (current === file)
+        return [{ frameId: 0, error: { message: 'fixture script failure' } }]
+      return executeScript(options)
+    }
+    const before = calls.length
+    await $('connect').onclick()
+    assert.equal(
+      $('status').textContent,
+      `Could not load Messenger helper (${file}): fixture script failure`,
+    )
+    assert.deepEqual(
+      injected,
+      file === '/src/core.js' ? [file] : ['/src/core.js', file],
+    )
+    assert.equal(calls.length, before)
+    assert.equal($('start').disabled, true)
+    assert.equal($('connect').hidden, false)
+    assert.equal($('connect').disabled, false)
+  }
+
+  browser.scripting.executeScript = async (options) => {
+    if (options.files) throw Error('fixture permission failure')
+    return executeScript(options)
+  }
+  await $('connect').onclick()
+  assert.equal(
+    $('status').textContent,
+    'Could not load Messenger helper (/src/core.js): fixture permission failure',
+  )
+
+  // Preserve RPC errors too; a missing bridge or reply is not proof of reload.
+  for (const [failure, expected] of [
+    [
+      async () => [{ error: 'fixture RPC error' }],
+      'Messenger request failed (probe): fixture RPC error',
+    ],
+    [
+      async () => {
+        throw Error('fixture tab closed')
+      },
+      'Messenger request failed (probe): fixture tab closed',
+    ],
+    [
+      async () => [],
+      'Messenger request failed (probe): Browser returned no script execution result.',
+    ],
+    [
+      async () => [{}],
+      'Messenger returned no reply to probe. Retry the connection.',
+    ],
+    [
+      async ({ func, args }) => [{ result: await func(...args) }],
+      'Messenger archive helper is missing from the page. Retry the connection.',
+    ],
+  ]) {
+    browser.scripting.executeScript = (options) =>
+      options.args ? failure(options) : executeScript(options)
+    await $('connect').onclick()
+    assert.equal($('status').textContent, expected)
+    assert.equal($('start').disabled, true)
+    assert.equal($('connect').hidden, false)
+  }
+  browser.scripting.executeScript = executeScript
+  await $('connect').onclick()
+  assert.equal(
+    $('status').textContent,
+    'Ready. Keep Messenger open while archiving.',
+  )
+  assert.equal($('start').disabled, false)
   assert.equal((await db.storageUsage()).attachmentBytes, 1)
 })
