@@ -1,3 +1,11 @@
+import {
+  makeCheckpoint,
+  mediaMatches,
+  mediaPath,
+  messageContent,
+  messageDigest,
+  messageKey,
+} from './checkpoint.js'
 import { Zip } from './zip.js'
 
 const encoder = new TextEncoder()
@@ -10,7 +18,10 @@ export async function archiveZip(
   account,
   progress = () => {},
   cancelled = () => false,
+  prepared = () => {},
 ) {
+  if (archive.account && String(account) !== archive.account)
+    throw Error('Archive belongs to a different Messenger account.')
   const check = () => {
     if (cancelled())
       throw new DOMException(
@@ -18,8 +29,7 @@ export async function archiveZip(
         'AbortError',
       )
   }
-  const zip = new Zip(check),
-    C = globalThis.MessengerArchiveCore
+  const zip = new Zip(check)
   const [
     threads,
     media,
@@ -35,6 +45,14 @@ export async function archiveZip(
     archive.count('messages'),
     archive.all('mediaIssues'),
   ])
+  const previous = await archive.get('meta', 'checkpoint')
+  const known = new Map(
+    (previous?.value.messages || []).map((m) => [messageKey(m), m]),
+  )
+  const assets = new Map((previous?.value.media || []).map((m) => [m.id, m]))
+  const backupId = crypto.randomUUID()
+  const included = []
+  const messageSnapshot = []
   const names = contacts?.value || {}
   let messages = 0
   const json = (path, value) =>
@@ -51,8 +69,16 @@ export async function archiveZip(
       for await (const message of archive.rows('messages', thread.jid)) {
         check()
         messages++
+        const record = {
+          key: message.key,
+          hash: await messageDigest(message),
+          revision: message.localRevision,
+        }
+        messageSnapshot.push(record)
+        if (known.get(messageKey(message))?.hash === record.hash) continue
+        included.push(record)
         chunk += `${JSON.stringify({
-          ...message,
+          ...messageContent(message),
           senderName: names[message.senderId] || message.senderId,
         })}\n`
         if (chunk.length >= 262144) {
@@ -80,22 +106,55 @@ export async function archiveZip(
       'Message count changed or conversation records are missing. Retry export.',
     )
   await json('threads.json', threads)
-  const saved = media.filter((job) => job.status === 'saved')
+  const saved = media.filter(
+    (job) => job.status === 'saved' && !mediaMatches(job, assets.get(job.id)),
+  )
   for (const [index, job] of saved.entries()) {
     check()
     if (index % 25 === 0)
       progress(`Packing attachment ${index + 1}/${saved.length}…`)
-    job.path = `media/${C.filename(job.id, job.mime)}`
+    job.path = mediaPath(job)
     await zip.add(job.path, await archive.mediaBlob(job))
   }
-  await json('attachments.json', media)
+  const checkpoint = await makeCheckpoint(
+    archive,
+    account,
+    backupId,
+    included,
+    threads,
+    media,
+    previous?.value,
+  )
+  await json('checkpoint.json', checkpoint)
+  const references = new Map(checkpoint.media.map((m) => [m.id, m]))
+  await json(
+    'attachments.json',
+    media.map((job) => {
+      const reference = references.get(job.id)
+      return reference
+        ? {
+            ...job,
+            backupId: reference.backupId,
+            path: reference.path,
+            availability:
+              reference.backupId === backupId
+                ? 'this-backup'
+                : 'earlier-backup',
+          }
+        : job
+    }),
+  )
   await json('manifest.json', {
-    format: 'messenger-archive/2',
+    format: 'messenger-archive/3',
+    backupId,
+    dependencies: checkpoint.dependencies,
+    checkpoint: 'checkpoint.json',
     exportComplete: true,
     account,
     exportedAt: new Date().toISOString(),
     inventory,
-    messages,
+    messages: included.length,
+    cachedMessages: messages,
     threads: threads.length,
     attachmentsSaved: saved.length,
     historyFailures: threads
@@ -105,7 +164,7 @@ export async function archiveZip(
       .filter((t) => t.decodeErrors)
       .map((t) => ({ jid: t.jid, count: t.decodeErrors })),
     attachmentFailures: media
-      .filter((m) => m.status !== 'saved')
+      .filter((m) => !['saved', 'exported'].includes(m.status))
       .map((m) => ({ id: m.id, error: m.error })),
     unresolvedMediaMessages: unresolvedMedia.length,
     unresolvedMedia,
@@ -113,5 +172,17 @@ export async function archiveZip(
       'Encrypted conversations only. Unencrypted history is not included.',
   })
   progress('Preparing download…')
-  return zip.finish()
+  const blob = zip.finish()
+  // Caller holds the account lock through download completion and finalization.
+  // Record revisions bind cleanup to the bytes and messages packed in this ZIP.
+  const snapshot = {
+    parentId: previous?.value.backupId || null,
+    checkpoint,
+    messages: messageSnapshot,
+    media: media
+      .filter((m) => m.status === 'saved')
+      .map((m) => ({ id: m.id, revision: m.localRevision })),
+  }
+  await prepared(snapshot)
+  return blob
 }

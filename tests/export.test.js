@@ -36,18 +36,18 @@ test('ZIP separates conversations, preserves raw records and errors, and leaves 
   const job = { id: 'hash', jid: threads[0].jid, size: 3, mime: 'image/png' }
   await db.beginMedia(job)
   await db.saveChunk(job.id, 0, new Uint8Array([0, 255, 7]))
-  await db.put('media', { ...job, status: 'saved' })
-  await db.put('media', {
+  await db.saveMedia({ ...job, status: 'saved' })
+  await db.saveMedia({
     id: 'missing',
     status: 'error',
     error: 'direct-path-undefined',
   })
   const files = await readZip(
-    Buffer.from(await (await archiveZip(db, 'account')).arrayBuffer()),
+    Buffer.from(await (await archiveZip(db, db.account)).arrayBuffer()),
   )
   const manifest = JSON.parse(files['manifest.json']),
     index = JSON.parse(files['threads.json'])
-  assert.equal(manifest.format, 'messenger-archive/2')
+  assert.equal(manifest.format, 'messenger-archive/3')
   assert.equal(manifest.messages, 2)
   assert.equal(manifest.exportComplete, true)
   assert.equal(manifest.attachmentsSaved, 1)
@@ -75,7 +75,7 @@ test('ZIP separates conversations, preserves raw records and errors, and leaves 
   assert.equal(await db.count('messages'), 2)
   assert.equal((await db.get('media', 'hash')).path, undefined)
   await assert.rejects(
-    archiveZip(db, 'account', undefined, () => true),
+    archiveZip(db, db.account, undefined, () => true),
     { name: 'AbortError' },
   )
   assert.equal(await db.count('messages'), 2)
@@ -111,14 +111,14 @@ test('ZIP distinguishes unresolved sticker messages from failed downloads and re
       error: 'message unavailable',
     },
   ]
-  await db.put('media', {
+  await db.saveMedia({
     id: 'missing',
     status: 'error',
     error: 'direct-path-undefined',
     downloadAttempts: attempts,
   })
   const files = await readZip(
-    Buffer.from(await (await archiveZip(db, 'account')).arrayBuffer()),
+    Buffer.from(await (await archiveZip(db, db.account)).arrayBuffer()),
   )
   const manifest = JSON.parse(files['manifest.json']),
     attachments = JSON.parse(files['attachments.json'])

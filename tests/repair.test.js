@@ -111,7 +111,7 @@ test('exhausted downloads persist fresh metadata and bounded attempt diagnostics
         operation: 'previous',
       })),
     }
-  await db.put('media', job)
+  await db.saveMedia(job)
   let failure
   try {
     await retryAttachment(
@@ -123,7 +123,7 @@ test('exhausted downloads persist fresh metadata and bounded attempt diagnostics
         throw Error('Attachment download failed: direct-path-undefined')
       },
       retry,
-      (updated) => db.put('media', updated),
+      (updated) => db.saveMedia(updated),
     )
   } catch (error) {
     failure = error
@@ -142,7 +142,9 @@ test('exhausted downloads persist fresh metadata and bounded attempt diagnostics
   )
   assert.ok(failure.job.downloadAttempts.at(-1).at > 0)
   assert.equal(failure.job.downloadAttempts.at(-1).messageId, job.messageId)
-  assert.deepEqual(await db.get('media', 'hash'), failure.job)
+  const { localRevision, ...savedFailure } = await db.get('media', 'hash')
+  assert.equal(typeof localRevision, 'string')
+  assert.deepEqual(savedFailure, failure.job)
   assert.ok(failure.job.sources.some((s) => s.mediaEntry === 'original'))
   db.db.close()
 })
@@ -295,7 +297,7 @@ test('local repair selects only errors and failed attachment sources, keeping pa
     next: null,
     decodeErrors: ['a'],
   })
-  await db.put('media', {
+  await db.saveMedia({
     id: 'missing',
     expectedHash: 'missing',
     status: 'error',
@@ -304,7 +306,7 @@ test('local repair selects only errors and failed attachment sources, keeping pa
   const saved = { id: 'saved', status: 'saved', size: 3 }
   await db.beginMedia(saved)
   await db.saveChunk(saved.id, 0, new Uint8Array([1, 2, 3]))
-  await db.put('media', saved)
+  await db.saveMedia(saved)
   const before = await db.get('threads', thread.jid),
     calls = []
   const rpc = async (action, { jid, raw }) => {

@@ -1,6 +1,7 @@
 import { openArchive } from './db.js'
 import { downloadComplete } from './downloads.js'
 import { archiveZip } from './export.js'
+import { importCheckpoint } from './import.js'
 import { repairArchive, retryAttachment } from './repair.js'
 
 const api = globalThis.browser || chrome,
@@ -9,37 +10,44 @@ const $ = (id) => document.getElementById(id)
 let archive,
   account,
   tabId,
-  running = false,
+  operation = null,
   paused = false,
-  connecting = false,
   connected = false,
-  exporting = false,
   archiveState = {},
   issuePage = 0,
   issueRender = 0,
-  issueData
+  issueData,
+  storageUpdated = 0
 const issuePageSize = 50
 const say = (text, error = false) => {
   $('status').textContent = text
   $('status').className = error ? 'error' : ''
 }
 const enabled = () => {
+  const archiving = operation === 'archive'
+  const busy = operation !== null
   $('start').disabled =
-    !archive || connecting || !connected || exporting || (running && paused)
-  $('start').textContent =
-    running && !exporting
-      ? paused
-        ? 'Pausing…'
-        : 'Pause'
-      : archiveState.label || 'Start archive'
-  $('export').disabled =
-    !archive || !archiveState.hasData || running || connecting
-  $('connect').disabled = running || connecting
-  $('actionHelp').textContent =
-    running && !exporting
-      ? 'Keep Messenger and this tab open. Pause saves your place.'
-      : archiveState.help ||
-        'Keep Messenger and this tab open. Your progress is saved automatically.'
+    !archive || !connected || (busy && !archiving) || (archiving && paused)
+  $('start').textContent = archiving
+    ? paused
+      ? 'Pausing…'
+      : 'Pause'
+    : archiveState.label || 'Start archive'
+  $('export').disabled = !archive || !archiveState.hasData || busy
+  $('connect').disabled = busy
+  for (const id of [
+    'importBackup',
+    'cleanup',
+    'clearLocal',
+    'fullPhotos',
+    'autoCleanup',
+    'retainMessages',
+  ])
+    $(id).disabled = !archive || busy
+  $('actionHelp').textContent = archiving
+    ? 'Keep Messenger and this tab open. Pause saves your place.'
+    : archiveState.help ||
+      'Keep Messenger and this tab open. Your progress is saved automatically.'
 }
 function disconnected() {
   connected = false
@@ -80,7 +88,7 @@ async function rpc(action, args = {}) {
   }
   return result.value
 }
-async function refresh() {
+async function refresh(forceStorage = false) {
   if (!archive) return
   const [threads, messages, media, saved, failed, unresolved] =
     await Promise.all([
@@ -91,9 +99,10 @@ async function refresh() {
       archive.count('media', 'status', 'error'),
       archive.count('mediaIssues'),
     ])
-  const [inventory, lastRun] = await Promise.all([
+  const [inventory, lastRun, exported] = await Promise.all([
     archive.get('meta', 'inventory'),
     archive.get('meta', 'run'),
+    archive.count('media', 'status', 'exported'),
   ])
   const reached = threads.filter((t) => t.status === 'reached-start').length
   const errors = threads.filter((t) => t.status === 'error').length
@@ -103,7 +112,7 @@ async function refresh() {
   const counts = [
     `${threads.length} chats`,
     `${messages.toLocaleString()} messages saved`,
-    `${saved}/${media} attachments saved`,
+    `${saved + exported}/${media} attachments saved`,
     `${reached} chats saved`,
   ]
   if (!inventory?.complete) counts.push('Finding chats unfinished')
@@ -112,11 +121,29 @@ async function refresh() {
   if (failed) counts.push(`${failed} attachments failed`)
   if (unresolved) counts.push(`${unresolved} attachments missing`)
   if (decodeIssues) counts.push(`${decodeIssues} messages need attention`)
+  if (exported) counts.push(`${exported} attachments in earlier ZIPs`)
   $('counts').textContent = counts.join(' · ')
+  if (
+    forceStorage ||
+    !operation ||
+    operation === 'connect' ||
+    Date.now() - storageUpdated > 30000
+  ) {
+    const usage = await archive.storageUsage()
+    const estimate = await navigator.storage?.estimate().catch(() => null)
+    const size = (n) => `${(n / 1048576).toFixed(1)} MiB`
+    $('storage').textContent =
+      `Attachment bytes in this browser: ${size(usage.attachmentBytes)}. Exported bytes removable: ${size(usage.reclaimableBytes)}.${estimate ? ` Browser storage for this extension: ${size(estimate.usage || 0)} of ${size(estimate.quota || 0)} quota.` : ''}`
+    storageUpdated = Date.now()
+  }
+  const checkpoint = await archive.get('meta', 'backupSummary')
+  $('backup').textContent = checkpoint
+    ? `Latest confirmed backup: ${checkpoint.backupId}. Keep its baseline and all ${checkpoint.dependencies} dependencies.`
+    : 'No confirmed backup yet. Import an existing ZIP to use it as your baseline.'
   const unfinished =
     !inventory?.complete ||
     threads.some((t) => t.encrypted && t.status !== 'reached-start') ||
-    saved < media ||
+    saved + exported < media ||
     issues > 0
   const complete = lastRun?.complete || !unfinished
   archiveState = {
@@ -218,32 +245,32 @@ async function renderIssues() {
   $('previousIssues').disabled = issuePage === 0
   $('nextIssues').disabled = from + issuePageSize >= data.total
 }
-async function work(fn) {
-  if (!archive || running || connecting) return
-  const run = async (lock) => {
-    if (!lock)
-      throw Error(
-        'This account is already being archived in another extension tab.',
-      )
-    running = true
-    paused = false
-    enabled()
-    try {
-      await fn()
-    } finally {
-      running = false
-      enabled()
-      await refresh()
-    }
-  }
+async function work(fn, kind = 'local') {
+  if (!archive || operation) return
+  operation = kind
+  paused = false
+  enabled()
   try {
     await navigator.locks.request(
       `messenger-archive-${account}`,
       { ifAvailable: true },
-      run,
+      async (lock) => {
+        if (!lock)
+          throw Error(
+            'This account is already being archived in another extension tab.',
+          )
+        try {
+          await fn()
+        } finally {
+          await refresh(true)
+        }
+      },
     )
   } catch (e) {
     say(e.message, true)
+  } finally {
+    operation = null
+    enabled()
   }
 }
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -337,12 +364,13 @@ async function fetchHistories() {
 async function fetchMedia() {
   for await (let job of archive.rows('media')) {
     if (paused) break
-    if (job.status === 'saved') continue
+    if (['saved', 'exported'].includes(job.status)) continue
+    job = { ...job, photoMode: $('fullPhotos').checked ? 'full' : 'preview' }
     say(`Downloading attachment from ${job.jid}…`)
     let token
     try {
       const download = await retryAttachment(job, rpc, retry, (updated) =>
-        archive.put('media', updated),
+        archive.saveMedia(updated),
       )
       job = download.job
       const result = download.result
@@ -358,16 +386,18 @@ async function fetchMedia() {
         size += data.length
       }
       if (size !== result.size) throw Error('Attachment transfer incomplete.')
-      await archive.put('media', {
+      await archive.saveMedia({
         ...job,
         ...result,
         token: undefined,
         status: 'saved',
+        backupId: undefined,
+        path: undefined,
         error: null,
         savedAt: Date.now(),
       })
     } catch (e) {
-      await archive.put('media', {
+      await archive.saveMedia({
         ...(e.job || job),
         status: 'error',
         error: e.message,
@@ -378,41 +408,11 @@ async function fetchMedia() {
     await refresh()
   }
 }
-async function resetHistories(cursor) {
-  const threads = await archive.all('threads')
-  for (const thread of threads.filter((t) => t.encrypted)) {
-    await archive.put('threads', {
-      ...thread,
-      status: 'pending',
-      cursor,
-      pages: 0,
-      error: null,
-    })
-  }
-}
 async function start() {
   await refresh()
-  let update = await archive.get('meta', 'update')
-  if (archiveState.complete || update?.pending) {
-    // Persist the reset intent so closing the panel halfway through is safe.
-    if (!update?.pending) {
-      update = {
-        key: 'update',
-        pending: true,
-        cursor: [Date.now() + 60000, null],
-      }
-      await archive.put('meta', update)
-    }
-    await archive.put('meta', { key: 'run', complete: false })
-    await archive.put('meta', {
-      key: 'inventory',
-      cursor: '9223372036854775807',
-      complete: false,
-      pages: 0,
-    })
-    await resetHistories(update.cursor)
-    await archive.put('meta', { ...update, pending: false })
-  } else await archive.put('meta', { key: 'run', complete: false })
+  if (archiveState.complete)
+    await archive.beginUpdate([Date.now() + 60000, null])
+  else await archive.put('meta', { key: 'run', complete: false })
   const inventory = await archive.get('meta', 'inventory')
   if (!paused && !inventory?.complete) await discover()
   if (!paused) await fetchHistories()
@@ -436,7 +436,7 @@ async function start() {
         : 'Archive finished with issues. See Issues, or download the saved data.',
   )
 }
-async function download(blob, filename) {
+async function download(blob, filename, started) {
   const url = URL.createObjectURL(blob)
   try {
     const id = await api.downloads.download({
@@ -444,6 +444,7 @@ async function download(blob, filename) {
       filename,
       conflictAction: 'uniquify',
     })
+    await started(id)
     return (await downloadComplete(api.downloads, id)).filename
   } finally {
     URL.revokeObjectURL(url)
@@ -451,18 +452,52 @@ async function download(blob, filename) {
 }
 async function exportArchive() {
   try {
-    const blob = await archiveZip(archive, account, say, () => paused)
+    let snapshot
+    const options = {
+      cleanup: !!$('autoCleanup').checked,
+      retainMessages: !!$('retainMessages').checked,
+    }
+    const blob = await archiveZip(
+      archive,
+      account,
+      say,
+      () => paused,
+      async (value) => {
+        snapshot = value
+        await archive.put('meta', { key: 'pendingExport', snapshot, options })
+      },
+    )
     const filename = `messenger-archive-${new Date().toISOString().replace(/[:.]/g, '-')}.zip`
-    const path = await download(blob, filename)
-    say(`Saved archive: ${path}`)
+    const path = await download(blob, filename, (downloadId) =>
+      archive.put('meta', {
+        key: 'pendingExport',
+        snapshot,
+        options,
+        downloadId,
+      }),
+    )
+    await archive.finalizeBackup(snapshot, { ...options, filename: path })
+    say(`Saved archive: ${path}. Keep this ZIP and its dependencies.`)
   } catch (error) {
     if (error.name !== 'AbortError') throw error
     say(error.message)
   }
 }
+async function recoverDownload() {
+  const pending = await archive.get('meta', 'pendingExport')
+  if (pending?.downloadId == null) return
+  const summary = await archive.get('meta', 'backupSummary')
+  if ((summary?.backupId || null) !== pending.snapshot.parentId) return
+  const [item] = await api.downloads.search({ id: pending.downloadId })
+  if (item?.state === 'complete' && item.exists !== false)
+    await archive.finalizeBackup(pending.snapshot, {
+      ...pending.options,
+      filename: item.filename,
+    })
+}
 async function connect(preferredTab) {
-  if (running || connecting) return
-  connecting = true
+  if (operation) return
+  operation = 'connect'
   connected = false
   if (archive) archive.db.close()
   archive = null
@@ -524,6 +559,17 @@ async function connect(preferredTab) {
     account = probe.account
     progress('Opening saved archive…')
     archive = await openArchive(account, progress)
+    const settings = await archive.get('meta', 'settings')
+    $('fullPhotos').checked = settings?.fullPhotos || false
+    $('autoCleanup').checked = settings?.autoCleanup || false
+    $('retainMessages').checked = settings?.retainMessages !== false
+    await navigator.locks.request(
+      `messenger-archive-${account}`,
+      { ifAvailable: true },
+      async (lock) => {
+        if (lock) await recoverDownload()
+      },
+    )
     await refresh()
     connected = true
     say('Ready. Keep Messenger open while archiving.')
@@ -533,7 +579,7 @@ async function connect(preferredTab) {
     say(e.message, true)
   } finally {
     clearInterval(timer)
-    connecting = false
+    operation = null
     $('connectionProgress').hidden = true
     enabled()
   }
@@ -542,24 +588,57 @@ $('connect').onclick = () => connect(tabId)
 $('openMessenger').onclick = () =>
   api.tabs.create({ url: 'https://www.messenger.com/' })
 $('start').onclick = () => {
-  if (running && !exporting) {
+  if (operation === 'archive') {
     paused = true
     enabled()
     say('Pausing after the current request…')
     return
   }
-  if (connected) return work(start)
+  if (connected) return work(start, 'archive')
 }
-$('export').onclick = () =>
+$('export').onclick = () => work(exportArchive, 'export')
+$('importBackup').onchange = () =>
   work(async () => {
-    exporting = true
-    enabled()
+    const file = $('importBackup').files?.[0]
+    if (!file) return
     try {
-      await exportArchive()
+      const checkpoint = await importCheckpoint(file, account)
+      await archive.importBackup(checkpoint)
+      say(
+        'Backup imported. Update archive finishes interrupted history scans and checks completed chats for new messages.',
+      )
     } finally {
-      exporting = false
+      $('importBackup').value = ''
     }
   })
+$('cleanup').onclick = () =>
+  work(async () => {
+    await archive.cleanupExported({ messages: !$('retainMessages').checked })
+    say('Removed exported local bytes. Keep the ZIPs that contain them.')
+  })
+$('clearLocal').onclick = () =>
+  work(async () => {
+    if (
+      !globalThis.confirm(
+        'Delete ALL local archive data, including unfinished messages, attachments, and checkpoint? ZIP files are unchanged. Import your latest ZIP or checkpoint to resume.',
+      )
+    )
+      return
+    await archive.clearLocal()
+    say(
+      'All local archive data deleted. Import a backup or start a new archive.',
+    )
+  })
+for (const id of ['fullPhotos', 'autoCleanup', 'retainMessages'])
+  $(id).onchange = () =>
+    work(() =>
+      archive.put('meta', {
+        key: 'settings',
+        fullPhotos: !!$('fullPhotos').checked,
+        autoCleanup: !!$('autoCleanup').checked,
+        retainMessages: !!$('retainMessages').checked,
+      }),
+    )
 $('failureDetails').ontoggle = () =>
   renderIssues().catch((e) => say(e.message, true))
 for (const [id, step] of [
@@ -579,8 +658,7 @@ for (const [id, step] of [
 api.tabs.onUpdated.addListener((id, change, tab) => {
   if (
     change.status === 'complete' &&
-    !running &&
-    !connecting &&
+    !operation &&
     (id === tabId ||
       (!archive &&
         /^https:\/\/(?:www\.)?(?:messenger\.com\/|facebook\.com\/messages\/)/.test(

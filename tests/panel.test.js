@@ -4,6 +4,7 @@ import test from 'node:test'
 import 'fake-indexeddb/auto'
 import '../src/core.js'
 import { openArchive } from '../src/db.js'
+import { archiveZip } from '../src/export.js'
 
 // Exercise the panel with real archive storage and a small DOM surface.
 class Element {
@@ -170,8 +171,13 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
   assert.equal($('start').textContent, 'Update archive')
   assert.equal(await db.count('messages'), 2)
 
-  // Recover an update interrupted halfway through resetting old checkpoints.
-  await db.put('meta', { key: 'update', pending: true, cursor: [1000, null] })
+  // A failed scan resumes while saved decode issues are retried.
+  const unfinished = await db.get('threads', thread.jid)
+  await db.put('threads', {
+    ...unfinished,
+    status: 'error',
+    cursor: [1000, null],
+  })
   await db.put('meta', { key: 'run', complete: false })
   await db.put('meta', {
     key: 'inventory',
@@ -182,7 +188,6 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
   persistentIssue = false
   await $('connect').onclick()
   await $('start').onclick()
-  assert.equal((await db.get('meta', 'update')).pending, false)
   assert.equal((await db.get('threads', thread.jid)).decodeErrors, 0)
   assert.equal($('failureDetails').hidden, true)
 
@@ -199,7 +204,7 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
     error: 'inventory issue',
   })
   for (let i = 0; i < 63; i++)
-    await db.put('media', {
+    await db.saveMedia({
       id: `failed-${i}`,
       jid: thread.jid,
       messageId: `failed-${i}`,
@@ -239,4 +244,159 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
   )
   await $('previousIssues').onclick()
   assert.equal($('issueRange').textContent, '51–100 of 129 entries')
+
+  // Download construction is not a durable backup. Hold completion, interrupt,
+  // and complete a second download with automatic cleanup enabled.
+  await db.clearLocal()
+  await db.discover([thread], { complete: true })
+  await db.commitPage(await db.get('threads', thread.jid), {
+    records: [
+      {
+        key: [thread.jid, 'exported'],
+        jid: thread.jid,
+        id: 'exported',
+        timestamp: 100,
+        raw: {},
+        error: null,
+      },
+    ],
+    attachments: [],
+    next: null,
+  })
+  const job = {
+    id: 'snapshot',
+    jid: thread.jid,
+    size: 3,
+    mime: 'image/png',
+    status: 'saved',
+  }
+  await db.beginMedia(job)
+  await db.saveChunk(job.id, 0, new Uint8Array([1, 2, 3]))
+  await db.saveMedia(job)
+  await db.saveMedia({ id: 'unfinished', status: 'pending' })
+  await db.saveChunk('unfinished', 0, new Uint8Array([7]))
+  const changed = new Set(),
+    erased = new Set()
+  let downloadState = 'in_progress',
+    enteredDownload,
+    downloadId = 0
+  globalThis.browser.downloads = {
+    download: async () => {
+      enteredDownload?.()
+      return ++downloadId
+    },
+    search: async ({ id }) => [
+      { id, state: downloadState, filename: '/downloads/backup.zip' },
+    ],
+    onChanged: {
+      addListener: (fn) => changed.add(fn),
+      removeListener: (fn) => changed.delete(fn),
+    },
+    onErased: {
+      addListener: (fn) => erased.add(fn),
+      removeListener: (fn) => erased.delete(fn),
+    },
+  }
+  await $('connect').onclick()
+  $('autoCleanup').checked = true
+  $('retainMessages').checked = false
+  let requested = new Promise((resolve) => {
+    enteredDownload = resolve
+  })
+  const interrupted = $('export').onclick()
+  await requested
+  assert.equal($('cleanup').disabled, true)
+  assert.equal($('clearLocal').disabled, true)
+  assert.equal($('importBackup').disabled, true)
+  assert.equal($('export').disabled, true)
+  assert.equal(await db.get('meta', 'checkpoint'), undefined)
+  assert.equal((await db.storageUsage()).attachmentBytes, 4)
+  downloadState = 'interrupted'
+  for (const fn of changed)
+    fn({ id: downloadId, state: { current: downloadState } })
+  await interrupted
+  assert.equal(await db.get('meta', 'checkpoint'), undefined)
+  assert.equal((await db.get('media', 'snapshot')).status, 'saved')
+  assert.equal(await db.count('messages'), 1)
+
+  downloadState = 'in_progress'
+  requested = new Promise((resolve) => {
+    enteredDownload = resolve
+  })
+  const successful = $('export').onclick()
+  await requested
+  downloadState = 'complete'
+  for (const fn of changed)
+    fn({ id: downloadId, state: { current: downloadState } })
+  await successful
+  assert.match($('status').textContent, /Saved archive:/)
+  assert.ok(await db.get('meta', 'checkpoint'))
+  assert.equal((await db.get('media', 'snapshot')).status, 'exported')
+  assert.equal((await db.get('media', 'unfinished')).status, 'pending')
+  assert.equal((await db.storageUsage()).attachmentBytes, 1)
+  assert.equal(await db.count('messages'), 0)
+
+  // Reopening can finalize a completed download whose original tab closed.
+  await db.saveMessage({
+    key: [thread.jid, 'after-restart'],
+    jid: thread.jid,
+    id: 'after-restart',
+    timestamp: 200,
+  })
+  let snapshot
+  await archiveZip(db, account, undefined, undefined, (value) => {
+    snapshot = value
+  })
+  await db.put('meta', {
+    key: 'pendingExport',
+    snapshot,
+    options: { cleanup: true, retainMessages: false },
+    downloadId: 99,
+  })
+  await $('connect').onclick()
+  assert.equal(
+    (await db.get('meta', 'checkpoint')).value.backupId,
+    snapshot.checkpoint.backupId,
+  )
+  assert.equal(await db.get('meta', 'pendingExport'), undefined)
+  assert.equal(await db.count('messages'), 0)
+  assert.equal((await db.storageUsage()).attachmentBytes, 1)
+
+  // Local work reserves the operation before waiting for the account lock.
+  // It must not expose Pause or allow another operation to start meanwhile.
+  let releaseLock, enteredLock
+  const waiting = new Promise((resolve) => {
+    enteredLock = resolve
+  })
+  const held = new Promise((resolve) => {
+    releaseLock = resolve
+  })
+  navigator.locks.request = async (_name, _options, run) => {
+    enteredLock()
+    await held
+    return run({})
+  }
+  const label = $('start').textContent
+  const beforeCalls = calls.length
+  const cleanup = $('cleanup').onclick()
+  await waiting
+  assert.equal($('start').disabled, true)
+  assert.equal($('start').textContent, label)
+  assert.equal($('connect').disabled, true)
+  assert.equal($('export').disabled, true)
+  await $('start').onclick()
+  await $('connect').onclick()
+  assert.equal(calls.length, beforeCalls)
+  releaseLock()
+  await cleanup
+  assert.equal($('cleanup').disabled, false)
+  assert.equal($('start').disabled, false)
+
+  // Lock contention must leave data intact and release the local operation state.
+  navigator.locks.request = async (_name, _options, run) => run(null)
+  await $('cleanup').onclick()
+  assert.match($('status').textContent, /another extension tab/)
+  assert.equal($('start').disabled, false)
+  assert.equal($('cleanup').disabled, false)
+  assert.equal((await db.storageUsage()).attachmentBytes, 1)
 })

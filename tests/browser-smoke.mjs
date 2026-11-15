@@ -316,6 +316,18 @@ try {
     'Start archive',
   )
   assert.equal(await panel.$eval('#export', (button) => button.disabled), true)
+  await unrelated.bringToFront()
+  await unrelated.triggerExtensionAction(extension)
+  await panel.waitForFunction(
+    async () => (await chrome.tabs.getCurrent()).active,
+  )
+  assert.equal(
+    await worker.evaluate(
+      async (url) => (await chrome.tabs.query({ url: `${url}*` })).length,
+      panel.url(),
+    ),
+    1,
+  )
   assert.equal(
     await panel.evaluate(
       `document.querySelector('#discover, #recheck, #repair, #pause')`,
@@ -385,9 +397,9 @@ try {
   await panel.evaluate(`(async()=>{
     const {openArchive}=await import('../src/db.js');const db=await openArchive('999');
     const record=await db.get('messages',['123@msgr','123@msgr-new']);
-    await db.put('messages',{...record,error:'fixture stale decode issue'});
+    await db.saveMessage({...record,error:'fixture stale decode issue'});
     const thread=await db.get('threads','123@msgr');await db.put('threads',{...thread,decodeErrors:1});
-    const [job]=await db.all('media');await db.put('media',{...job,status:'error',error:'hash-mismatch',mediaEntry:MessengerArchiveCore.pack(new Uint8Array([9]))});
+    const [job]=await db.all('media');await db.saveMedia({...job,status:'error',error:'hash-mismatch',mediaEntry:MessengerArchiveCore.pack(new Uint8Array([9]))});
     await db.put('meta',{key:'run',complete:false});
     db.db.close();
   })()`)
@@ -516,7 +528,7 @@ try {
     })
     for (let i = 0; i < 63; i++) {
       const id = `pagination-error-${String(i).padStart(3, '0')}`
-      await db.put('media', {
+      await db.saveMedia({
         id,
         jid: thread.jid,
         messageId: id,

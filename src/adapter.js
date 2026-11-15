@@ -338,6 +338,12 @@
           timestamp,
           expectedHash: key,
           filename: m.filename || '',
+          mediaKind:
+            type != null && type === types.IMAGE
+              ? 'photo'
+              : type != null && type === types.VIDEO
+                ? 'video'
+                : 'other',
           mediaEntry: C.pack(m.mediaEntryData),
           protocolMsgId: {
             author: jids.toUserJid(String(metadata?.senderId || '0')),
@@ -368,13 +374,14 @@
   }
   async function media(job) {
     const bridge = (await mod('MAWBridge')).getBridge()
+    const preview = job.mediaKind === 'photo' && job.photoMode !== 'full'
     // Uses the export media reader; its native code may refresh Meta's local CDN URL cache.
     const result = await bridge.sendAndReceive(
       'backend',
       'dyiDownloadMediaV2',
       {
         mediaEntry: C.unpack(job.mediaEntry),
-        mediaOption: 0,
+        mediaOption: preview ? 1 : 0,
         plaintextHash: job.expectedHash,
         protocolMsgId: job.protocolMsgId,
         sortOrderMs: job.timestamp,
@@ -387,7 +394,8 @@
     const payload = result.value,
       validated = payload.validatedResult
     const plaintext = validated?.validatedPlaintext
-    if (!plaintext) throw Error('Media downloader returned no plaintext.')
+    if (!(plaintext instanceof ArrayBuffer) && !ArrayBuffer.isView(plaintext))
+      throw Error('Media downloader returned no plaintext bytes.')
     const bytes =
       plaintext instanceof ArrayBuffer
         ? new Uint8Array(plaintext)
@@ -396,18 +404,35 @@
             plaintext.byteOffset,
             plaintext.byteLength,
           )
+    if (!bytes.length) throw Error('Media downloader returned empty plaintext.')
     const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
     const hex = [...digest].map((x) => x.toString(16).padStart(2, '0')).join('')
-    const expected = job.expectedHash
-      .replace(/=+$/, '')
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-    const encoded = C.bytesToBase64(digest)
-      .replace(/=+$/, '')
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-    if (expected.toLowerCase() !== hex && expected !== encoded)
+    const matches = (hash) => {
+      if (!hash) return false
+      const normalized = (text) =>
+        String(text).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_')
+      return (
+        String(hash).toLowerCase() === hex ||
+        normalized(hash) === normalized(C.bytesToBase64(digest))
+      )
+    }
+    const sourceVerified = matches(job.expectedHash)
+    const metadata = preview ? C.photoMetadata(C.unpack(job.mediaEntry)) : {}
+    const thumbnailVerified = metadata.thumbnailHash
+      ? matches(metadata.thumbnailHash)
+      : null
+    if (!preview && !sourceVerified)
       throw Error('Attachment SHA-256 does not match its message metadata.')
+    if (
+      preview &&
+      !sourceVerified &&
+      metadata.thumbnailHash &&
+      !metadata.progressive &&
+      !thumbnailVerified
+    )
+      throw Error(
+        'Photo preview SHA-256 does not match its thumbnail metadata.',
+      )
     const token = crypto.randomUUID()
     buffers.set(token, { bytes, expires: Date.now() + 300000 })
     for (const [key, data] of buffers)
@@ -415,10 +440,25 @@
     return {
       token,
       size: bytes.length,
-      mime:
+      mime: C.detectedMime(
+        bytes,
         validated.mimeType ||
-        payload.unvalidatedMimeType ||
-        'application/octet-stream',
+          payload.unvalidatedMimeType ||
+          'application/octet-stream',
+      ),
+      nativeMime: validated.mimeType || payload.unvalidatedMimeType || null,
+      representation: preview
+        ? sourceVerified
+          ? 'full-fallback'
+          : 'native-preview'
+        : 'full',
+      requestedRepresentation: preview ? 'native-preview' : 'full',
+      verification: {
+        storedSha256: 'computed',
+        sourceHashVerified: sourceVerified,
+        thumbnailHashVerified: thumbnailVerified,
+        nativeSkipValidation: validated.skipValidation ?? null,
+      },
       sha256: hex,
     }
   }

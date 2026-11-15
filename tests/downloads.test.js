@@ -90,3 +90,10 @@ test('lookup failures release both listeners', async () => {
   await assert.rejects(downloadComplete(d, 42), /lookup failed/)
   clean(d)
 })
+
+test('a completed download known to be deleted cannot authorize local cleanup', async () => {
+  const d = fixture('complete')
+  d.item.exists = false
+  await assert.rejects(downloadComplete(d, 42), /no longer exists/)
+  clean(d)
+})

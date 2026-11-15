@@ -7,6 +7,7 @@ export function attachmentSource(job) {
     timestamp,
     expectedHash,
     filename,
+    mediaKind,
     mediaEntry,
     protocolMsgId,
   } = job
@@ -17,6 +18,7 @@ export function attachmentSource(job) {
     timestamp,
     expectedHash,
     filename,
+    mediaKind,
     mediaEntry,
     protocolMsgId,
   }

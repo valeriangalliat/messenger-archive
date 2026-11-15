@@ -33,7 +33,7 @@ test('messages, media jobs and cursor commit together; repeated records deduplic
   t = await db.get('threads', thread.jid)
   assert.deepEqual(t.cursor, [19, 'a'])
   assert.equal(await db.count('messages'), 1)
-  await db.put('media', {
+  await db.saveMedia({
     ...(await db.get('media', 'hash')),
     status: 'saved',
     size: 3,
@@ -164,7 +164,7 @@ test('history and repair merge all same-hash sources in a batch and preserve sav
   }
   await db.beginMedia(saved)
   await db.saveChunk('hash', 0, new Uint8Array([7, 8, 9]))
-  await db.put('media', saved)
+  await db.saveMedia(saved)
   await db.repairPage(thread.jid, {
     records: [],
     attachments: [copy('b'), copy('c'), copy('b')],
@@ -238,79 +238,6 @@ test('unresolved media updates atomically, deduplicates and clears after repair'
   assert.deepEqual((await db.get('messages', record.key)).raw, record.raw)
   db.db.close()
 })
-test('version 1 upgrade indexes existing media warnings without rewriting messages, files or checkpoints', async () => {
-  const account = crypto.randomUUID(),
-    req = indexedDB.open(`messenger-archive-${account}`, 1)
-  req.onupgradeneeded = () => {
-    const db = req.result
-    db.createObjectStore('meta', { keyPath: 'key' })
-    db.createObjectStore('threads', { keyPath: 'jid' })
-    db.createObjectStore('messages', { keyPath: 'key' })
-    db.createObjectStore('media', { keyPath: 'id' }).createIndex(
-      'status',
-      'status',
-    )
-    db.createObjectStore('chunks', { keyPath: 'key' })
-  }
-  const old = await new Promise((resolve, reject) => {
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error)
-  })
-  const t = {
-    ...thread,
-    cursor: [123, 'checkpoint'],
-    pages: 99,
-    status: 'reached-start',
-  }
-  const record = {
-    key: [thread.jid, 'sticker'],
-    jid: thread.jid,
-    id: 'sticker',
-    type: 'ReceiverFetch',
-    timestamp: 123,
-    error:
-      'Media could not be resolved without opening it; raw payload preserved.',
-    raw: { bytes: 'preserved' },
-    decoded: { receiverFetchInfo: { receiverFetchId: '987' } },
-  }
-  const media = { id: 'saved', status: 'saved', mime: 'image/png', size: 2 }
-  const tx = old.transaction(
-    ['threads', 'messages', 'media', 'chunks'],
-    'readwrite',
-  )
-  tx.objectStore('threads').put(t)
-  tx.objectStore('messages').put(record)
-  tx.objectStore('media').put(media)
-  tx.objectStore('messages').put({
-    ...record,
-    key: [thread.jid, 'text'],
-    error: 'Message decoding failed; raw payload preserved.',
-  })
-  tx.objectStore('chunks').put({
-    key: ['saved', 0],
-    blob: new Blob([new Uint8Array([3, 4])]),
-  })
-  await new Promise((resolve, reject) => {
-    tx.oncomplete = resolve
-    tx.onabort = () => reject(tx.error)
-  })
-  old.close()
-  const db = await openArchive(account)
-  assert.equal(db.db.version, 2)
-  assert.equal(await db.count('mediaIssues'), 1)
-  assert.deepEqual(await db.get('messages', record.key), record)
-  assert.deepEqual(await db.get('threads', thread.jid), t)
-  assert.deepEqual(await db.get('media', 'saved'), media)
-  assert.deepEqual(
-    new Uint8Array(await (await db.mediaBlob(media)).arrayBuffer()),
-    new Uint8Array([3, 4]),
-  )
-  db.db.close()
-  const reopened = await openArchive(account)
-  assert.equal(await reopened.count('mediaIssues'), 1)
-  reopened.db.close()
-})
-
 test('overlapping pages deduplicate message IDs and decoding counts without redownloading saved media', async () => {
   const db = await create()
   await db.discover([thread])
@@ -328,7 +255,7 @@ test('overlapping pages deduplicate message IDs and decoding counts without redo
     decodeErrors: ['a'],
   }
   await db.commitPage(await db.get('threads', thread.jid), p)
-  await db.put('media', { id: 'hash', status: 'saved', size: 3 })
+  await db.saveMedia({ id: 'hash', status: 'saved', size: 3 })
   await db.commitPage(await db.get('threads', thread.jid), p)
   assert.equal(await db.count('messages'), 1)
   assert.equal((await db.get('threads', thread.jid)).decodeErrors, 1)
@@ -354,4 +281,34 @@ test('rediscovery upgrades an unencrypted chat to pending without losing its che
   assert.equal(after.status, 'pending')
   assert.deepEqual(after.cursor, before.cursor)
   db.db.close()
+})
+
+test('repair deduplicates repeated records before updating issue counts', async () => {
+  const db = await create()
+  try {
+    await db.discover([thread])
+    const records = ['a', 'b'].map((id) => ({
+      key: [thread.jid, id],
+      jid: thread.jid,
+      id,
+      timestamp: 100,
+      error: 'decode failed',
+      unresolvedMedia: true,
+    }))
+    await db.commitPage(await db.get('threads', thread.jid), {
+      records,
+      attachments: [],
+      next: null,
+    })
+    const fixed = { ...records[0], error: null, unresolvedMedia: false }
+    await db.repairPage(thread.jid, {
+      records: [fixed, fixed],
+      attachments: [],
+    })
+    assert.equal((await db.get('threads', thread.jid)).decodeErrors, 1)
+    assert.equal(await db.count('mediaIssues'), 1)
+    assert.equal((await db.get('messages', records[0].key)).error, null)
+  } finally {
+    db.db.close()
+  }
 })

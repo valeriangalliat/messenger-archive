@@ -19,7 +19,15 @@ export function downloadComplete(downloads, id) {
               'File download interrupted. Saved browser data is still available.',
             ),
           )
-        else if (item.state === 'complete') finish(null, item)
+        else if (item.state === 'complete') {
+          if (item.exists === false)
+            finish(
+              Error(
+                'Downloaded file no longer exists. Saved browser data is still available.',
+              ),
+            )
+          else finish(null, item)
+        }
       } catch (error) {
         finish(error)
       }

@@ -458,3 +458,94 @@ test('dense timestamp groups expand the page instead of skipping IDs; oversized 
     /timestamp group did not fit/,
   )
 })
+
+test('native photo previews keep source identity separate, detect real MIME, and do not reduce videos', async () => {
+  const { rpc, modules, calls, digest, core } = await setup()
+  const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2])
+  const pngHash = Buffer.from(await crypto.subtle.digest('SHA-256', png))
+  let responseBytes = png
+  modules.MAWBridge.getBridge = () => ({
+    sendAndReceive: async (...args) => {
+      calls.push(['bridge', ...args])
+      return {
+        success: true,
+        value: {
+          validatedResult: {
+            validatedPlaintext: responseBytes,
+            skipValidation: true,
+          },
+          unvalidatedMimeType: 'image/jpeg',
+        },
+      }
+    },
+  })
+  const job = {
+    expectedHash: digest,
+    mediaKind: 'photo',
+    mediaEntry: core.pack(new Uint8Array([1, 2])),
+  }
+  const preview = await rpc('media', job)
+  assert.equal(calls.at(-1)[3].mediaOption, 1)
+  assert.equal(preview.mime, 'image/png')
+  assert.equal(preview.nativeMime, 'image/jpeg')
+  assert.equal(preview.representation, 'native-preview')
+  assert.equal(preview.verification.sourceHashVerified, false)
+  assert.equal(preview.verification.nativeSkipValidation, true)
+  assert.equal(preview.sha256, pngHash.toString('hex'))
+  assert.equal(core.filename('photo', preview.mime), 'photo.png')
+  await rpc('release', { token: preview.token })
+
+  // A separate native thumbnail has its own known hash, protobuf field 12.1.
+  job.mediaEntry = core.pack(new Uint8Array([98, 34, 10, 32, ...pngHash]))
+  const thumbnail = await rpc('media', job)
+  assert.equal(thumbnail.verification.thumbnailHashVerified, true)
+  assert.equal(thumbnail.verification.sourceHashVerified, false)
+  responseBytes = new Uint8Array([255, 216, 255, 217])
+  await assert.rejects(rpc('media', job), /thumbnail metadata/)
+  // Progressive preview bytes are not asserted to match the full photo or thumbnail.
+  job.mediaEntry = core.pack(
+    new Uint8Array([98, 34, 10, 32, ...pngHash, 122, 0]),
+  )
+  const progressive = await rpc('media', job)
+  assert.equal(progressive.representation, 'native-preview')
+  assert.equal(progressive.verification.thumbnailHashVerified, false)
+  assert.equal(progressive.verification.sourceHashVerified, false)
+
+  responseBytes = png
+  job.expectedHash = pngHash.toString('base64url')
+  const fallback = await rpc('media', job)
+  assert.equal(fallback.representation, 'full-fallback')
+  assert.equal(fallback.verification.sourceHashVerified, true)
+  const full = await rpc('media', { ...job, photoMode: 'full' })
+  assert.equal(calls.at(-1)[3].mediaOption, 0)
+  assert.equal(full.representation, 'full')
+  await rpc('media', { ...job, mediaKind: 'video' })
+  assert.equal(calls.at(-1)[3].mediaOption, 0)
+  await assert.rejects(
+    rpc('media', { ...job, mediaKind: 'video', expectedHash: digest }),
+    /does not match/,
+  )
+})
+
+test('history labels photos and videos from message types for the native downloader', async () => {
+  const { rpc, modules, jid } = await setup()
+  modules.MAWMsgType.MSG_TYPE.IMAGE = 'Image'
+  modules.MAWMsgType.MSG_TYPE.VIDEO = 'Video'
+  const decode =
+    modules.MAWHandleEchoProtobufsRestoreApi.decodeDecryptedMessageProtobuf
+  let type = 'Image'
+  modules.MAWHandleEchoProtobufsRestoreApi.decodeDecryptedMessageProtobuf = (
+    ...args
+  ) => ({ ...decode(...args), msgType: type })
+  assert.equal(
+    (await rpc('history', { jid, cursor: [100, null], batchSize: 100 }))
+      .attachments[0].mediaKind,
+    'photo',
+  )
+  type = 'Video'
+  assert.equal(
+    (await rpc('history', { jid, cursor: [100, null], batchSize: 100 }))
+      .attachments[0].mediaKind,
+    'video',
+  )
+})
