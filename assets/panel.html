@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Messenger Archive</title>
+<link rel="stylesheet" href="panel.css">
+<main>
+  <h1>Messenger Archive</h1>
+  <p>Save your encrypted Messenger conversations and attachments.</p>
+  <div id="connection" class="controls" hidden>
+    <button type="button" id="connect" hidden>Retry connection</button>
+    <button type="button" id="openMessenger" hidden>Open Messenger</button>
+  </div>
+  <div class="controls"><button type="button" id="start" class="primary" disabled>Start archive</button><button type="button" id="export" disabled>Download ZIP</button></div>
+  <p id="actionHelp">Keep Messenger and this tab open. Your progress is saved automatically.</p>
+  <p id="status" role="status">Connecting to Messenger…</p>
+  <progress id="connectionProgress" aria-label="Connecting to Messenger" hidden></progress>
+  <p id="counts"></p>
+  <details id="failureDetails" hidden>
+    <summary id="issueSummary">Issues</summary>
+    <p>Archiving retries these issues automatically. You can download the saved data at any time.</p>
+    <div id="failures" class="error"></div>
+    <nav id="issuePages" class="controls" aria-label="Issue pages" hidden>
+      <button type="button" id="previousIssues">Previous</button>
+      <span id="issueRange" role="status"></span>
+      <button type="button" id="nextIssues">Next</button>
+    </nav>
+  </details>
+  <table><thead><tr><th>Conversation</th><th>Status</th><th>Oldest message</th><th>Issues</th></tr></thead><tbody id="threads"></tbody></table>
+</main>
+<script src="../src/core.js"></script>
+<script type="module" src="../src/panel.js"></script>
+</html>

@@ -1,0 +1,93 @@
+:root {
+  font:
+    15px / 1.5 system-ui,
+    sans-serif;
+  color-scheme: light dark;
+}
+body {
+  margin: 0;
+  background: light-dark(#f7f8fa, #14161a);
+}
+main {
+  max-width: 1150px;
+  margin: 36px auto;
+  padding: 0 24px;
+}
+h1 {
+  margin-bottom: 4px;
+}
+p {
+  margin: 8px 0 16px;
+}
+.controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 16px 0;
+}
+button {
+  font: inherit;
+  padding: 8px 12px;
+  border: 1px solid #8886;
+  border-radius: 6px;
+  background: light-dark(white, #252830);
+}
+button {
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+button.primary {
+  color: white;
+  background: #2763d6;
+  border-color: #2763d6;
+}
+#actionHelp {
+  font-size: 13px;
+}
+#status {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+#counts {
+  font-variant-numeric: tabular-nums;
+}
+details {
+  margin: 20px 0;
+  font-size: 13px;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-top: 20px;
+}
+th,
+td {
+  text-align: left;
+  border-bottom: 1px solid #8884;
+  padding: 10px;
+  vertical-align: top;
+}
+td:last-child {
+  max-width: 450px;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+th {
+  font-size: 13px;
+}
+.error {
+  color: light-dark(#a32121, #ffaaaa);
+}
+
+[hidden] {
+  /* biome-ignore lint/complexity/noImportantStyles: Hidden controls must override display rules such as .controls. */
+  display: none !important;
+}
+progress {
+  width: 240px;
+  max-width: 100%;
+}

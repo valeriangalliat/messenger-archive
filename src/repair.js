@@ -1,0 +1,122 @@
+import {
+  attachmentSource,
+  attachmentSources,
+  sourceKey,
+} from './attachments.js'
+// Re-decode selected local records and collect alternate attachment metadata.
+export async function repairArchive(archive, rpc, progress, paused) {
+  const ids = new Set(),
+    groups = new Map()
+  for await (const job of archive.rows('media'))
+    if (job.status === 'error') ids.add(job.id)
+  let scanned = 0
+  for await (const message of archive.rows('messages')) {
+    if (paused()) return ids
+    if (++scanned % 2000 === 0)
+      progress(
+        `Checking saved records for issues and alternate attachments… ${scanned.toLocaleString()}`,
+      )
+    if (!message.error && !message.attachments?.some((id) => ids.has(id)))
+      continue
+    if (!groups.has(message.jid)) groups.set(message.jid, [])
+    groups.get(message.jid).push(message.raw)
+  }
+  for (const [jid, raw] of groups)
+    for (let offset = 0; offset < raw.length; offset += 100) {
+      if (paused()) return ids
+      progress(`Re-decoding saved records from ${jid}…`)
+      const page = await rpc('redecode', {
+        jid,
+        raw: raw.slice(offset, offset + 100),
+      })
+      await archive.repairPage(jid, page)
+      for (const job of page.attachments) ids.add(job.id)
+    }
+  return ids
+}
+
+export async function retryAttachment(
+  initial,
+  rpc,
+  retry,
+  checkpoint = async () => {},
+) {
+  const candidates = attachmentSources(initial)
+  const sources = new Map(candidates.map((s) => [sourceKey(s), s]))
+  let job = { ...initial },
+    lastError
+  const select = (source) => {
+    if (
+      source.id !== initial.id ||
+      source.expectedHash !== initial.expectedHash
+    )
+      throw Error(
+        'Attachment source has a different identifier or expected hash.',
+      )
+    sources.set(sourceKey(source), attachmentSource(source))
+    job = {
+      ...job,
+      ...source,
+      sources: [...sources.values()].filter(
+        (s) => sourceKey(s) !== sourceKey(source),
+      ),
+    }
+  }
+  const record = async (operation, error) => {
+    const entry = {
+      at: Date.now(),
+      operation,
+      jid: job.jid,
+      messageId: job.messageId,
+      timestamp: job.timestamp,
+      error: error ? String(error.message || error) : null,
+      code: error?.code || null,
+    }
+    job = {
+      ...job,
+      downloadAttempts: [...(job.downloadAttempts || []), entry].slice(-50),
+    }
+    await checkpoint(job)
+  }
+  const fatal = (error) =>
+    ['ACCOUNT_CHANGED', 'DISCONNECTED'].includes(error.code)
+  for (const candidate of candidates) {
+    try {
+      select(candidate)
+      // The retry budget belongs to this source. Every source gets a turn.
+      const result = await retry(async (attempt) => {
+        if (attempt === 1) {
+          try {
+            select(await rpc('refreshMedia', job))
+            await record('refreshMedia')
+          } catch (error) {
+            await record('refreshMedia', error)
+            if (fatal(error)) throw error
+          }
+        }
+        let result
+        try {
+          result = await rpc('media', job)
+        } catch (error) {
+          await record('media', error)
+          throw error
+        }
+        try {
+          await record('media')
+        } catch (error) {
+          if (result?.token)
+            await rpc('release', { token: result.token }).catch(() => {})
+          throw error
+        }
+        return result
+      })
+      return { job, result }
+    } catch (error) {
+      lastError = error
+      if (fatal(error)) break
+    }
+  }
+  throw Object.assign(lastError || Error('No attachment sources available.'), {
+    job,
+  })
+}
