@@ -489,4 +489,60 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
   )
   assert.equal($('start').disabled, false)
   assert.equal((await db.storageUsage()).attachmentBytes, 1)
+
+  // Show retry phases and queue position while preserving saved attachments.
+  // Pausing during the next download must finish it and leave the rest queued.
+  navigator.locks.request = async (_name, _options, run) => run({})
+  await db.clearLocal()
+  await db.discover([thread], { complete: true })
+  await db.put('threads', { ...thread, status: 'reached-start' })
+  await db.saveMedia({ id: 'already-saved', status: 'saved' })
+  for (const id of ['a-photo', 'b-photo', 'c-photo'])
+    await db.saveMedia({
+      id,
+      jid: thread.jid,
+      expectedHash: id,
+      mediaKind: 'photo',
+      status: id === 'b-photo' ? 'error' : 'pending',
+    })
+  let mediaCalls = 0
+  browser.scripting.executeScript = async (options) => {
+    const [action, values] = options.args || []
+    if (!['media', 'refreshMedia', 'chunk', 'release'].includes(action))
+      return executeScript(options)
+    let value
+    if (action === 'media') {
+      mediaCalls++
+      assert.ok($('status').textContent.includes(values.id))
+      assert.match($('status').textContent, /A chat · Photo preview/)
+      if (values.id === 'a-photo') {
+        assert.match($('status').textContent, /Attachment 1 of 3 this run/)
+        if (mediaCalls === 1)
+          return [{ result: { ok: false, error: 'media-not-found' } }]
+        assert.match($('status').textContent, /attempt 2\/3/)
+      } else {
+        assert.equal(values.id, 'b-photo')
+        assert.match($('status').textContent, /Attachment 2 of 3 this run/)
+        assert.match($('status').textContent, /2\/4 saved/)
+        $('start').onclick()
+      }
+      value = { token: values.id, size: 3, mime: 'image/jpeg' }
+    } else if (action === 'refreshMedia') {
+      assert.match($('status').textContent, /Refreshing download details/)
+      value = values
+    } else if (action === 'chunk') {
+      if (values.token === 'a-photo')
+        assert.match($('status').textContent, /Saving bytes: 0%/)
+      value = 'AQID'
+    } else value = true
+    return [{ result: { ok: true, value } }]
+  }
+  await $('connect').onclick()
+  await $('start').onclick()
+  assert.equal(mediaCalls, 3)
+  assert.equal((await db.get('media', 'already-saved')).status, 'saved')
+  assert.equal((await db.get('media', 'a-photo')).status, 'saved')
+  assert.equal((await db.get('media', 'b-photo')).status, 'saved')
+  assert.equal((await db.get('media', 'c-photo')).status, 'pending')
+  assert.equal($('status').textContent, 'Paused. Your progress is saved.')
 })

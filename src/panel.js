@@ -1,3 +1,4 @@
+import { attachmentProgress } from './attachment-progress.js'
 import { openArchive } from './db.js'
 import { downloadComplete } from './downloads.js'
 import { archiveZip } from './export.js'
@@ -290,7 +291,7 @@ async function work(fn, kind = 'local') {
   }
 }
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-async function retry(fn) {
+async function retry(fn, waiting = () => {}) {
   let error
   for (let attempt = 0; attempt < 3; attempt++) {
     if (paused) return null
@@ -305,7 +306,11 @@ async function retry(fn) {
         throw e
       error = e
     }
-    if (attempt < 2) await sleep(1000 * 3 ** attempt)
+    if (attempt < 2) {
+      const delay = 1000 * 3 ** attempt
+      waiting(attempt + 2, delay, error)
+      await sleep(delay)
+    }
   }
   throw error
 }
@@ -378,20 +383,45 @@ async function fetchHistories() {
   }
 }
 async function fetchMedia() {
+  const [total, saved, exported, threads] = await Promise.all([
+    archive.count('media'),
+    archive.count('media', 'status', 'saved'),
+    archive.count('media', 'status', 'exported'),
+    archive.all('threads'),
+  ])
+  const names = new Map(threads.map((t) => [t.jid, t.name]))
+  const stats = {
+    total,
+    queued: total - saved - exported,
+    position: 0,
+    saved: saved + exported,
+    failed: 0,
+  }
   for await (let job of archive.rows('media')) {
     if (paused) break
     if (['saved', 'exported'].includes(job.status)) continue
     job = { ...job, photoMode: $('fullPhotos').checked ? 'full' : 'preview' }
-    say(`Downloading attachment from ${job.jid}…`)
+    stats.position++
+    const progress = attachmentProgress(stats, job, names, say, () => paused)
     let token
     try {
-      const download = await retryAttachment(job, rpc, retry, (updated) =>
-        archive.saveMedia(updated),
+      const download = await retryAttachment(
+        job,
+        rpc,
+        retry,
+        (updated) => archive.saveMedia(updated),
+        progress.update,
       )
       job = download.job
       const result = download.result
       if (!result) break
       token = result.token
+      progress.update({
+        operation: 'transfer',
+        job,
+        bytes: 0,
+        size: result.size,
+      })
       await archive.beginMedia(job)
       let size = 0
       for (let offset = 0; offset < result.size; offset += 524288) {
@@ -400,6 +430,7 @@ async function fetchMedia() {
           throw Error('Attachment chunk has an unexpected size.')
         await archive.saveChunk(job.id, offset, data)
         size += data.length
+        progress.update({ bytes: size })
       }
       if (size !== result.size) throw Error('Attachment transfer incomplete.')
       await archive.saveMedia({
@@ -412,13 +443,16 @@ async function fetchMedia() {
         error: null,
         savedAt: Date.now(),
       })
+      stats.saved++
     } catch (e) {
+      stats.failed++
       await archive.saveMedia({
         ...(e.job || job),
         status: 'error',
         error: e.message,
       })
     } finally {
+      progress.stop()
       if (token) await rpc('release', { token }).catch(() => {})
     }
     await refresh()

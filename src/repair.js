@@ -40,6 +40,7 @@ export async function retryAttachment(
   rpc,
   retry,
   checkpoint = async () => {},
+  progress = () => {},
 ) {
   const candidates = attachmentSources(initial)
   const sources = new Map(candidates.map((s) => [sourceKey(s), s]))
@@ -80,36 +81,54 @@ export async function retryAttachment(
   }
   const fatal = (error) =>
     ['ACCOUNT_CHANGED', 'DISCONNECTED'].includes(error.code)
-  for (const candidate of candidates) {
+  for (const [index, candidate] of candidates.entries()) {
+    const report = (operation, attempt, details = {}) =>
+      progress({
+        operation,
+        attempt,
+        source: index + 1,
+        sources: candidates.length,
+        job,
+        ...details,
+      })
     try {
       select(candidate)
       // The retry budget belongs to this source. Every source gets a turn.
-      const result = await retry(async (attempt) => {
-        if (attempt === 1) {
-          try {
-            select(await rpc('refreshMedia', job))
-            await record('refreshMedia')
-          } catch (error) {
-            await record('refreshMedia', error)
-            if (fatal(error)) throw error
+      const result = await retry(
+        async (attempt) => {
+          if (attempt === 1) {
+            report('refreshMedia', attempt + 1)
+            try {
+              select(await rpc('refreshMedia', job))
+              await record('refreshMedia')
+            } catch (error) {
+              await record('refreshMedia', error)
+              if (fatal(error)) throw error
+            }
           }
-        }
-        let result
-        try {
-          result = await rpc('media', job)
-        } catch (error) {
-          await record('media', error)
-          throw error
-        }
-        try {
-          await record('media')
-        } catch (error) {
-          if (result?.token)
-            await rpc('release', { token: result.token }).catch(() => {})
-          throw error
-        }
-        return result
-      })
+          let result
+          report('media', attempt + 1)
+          try {
+            result = await rpc('media', job)
+          } catch (error) {
+            await record('media', error)
+            throw error
+          }
+          try {
+            await record('media')
+          } catch (error) {
+            if (result?.token)
+              await rpc('release', { token: result.token }).catch(() => {})
+            throw error
+          }
+          return result
+        },
+        (attempt, delay, error) =>
+          report('waiting', attempt, {
+            delay,
+            error: String(error.message || error),
+          }),
+      )
       return { job, result }
     } catch (error) {
       lastError = error
