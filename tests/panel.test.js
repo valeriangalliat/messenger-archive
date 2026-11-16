@@ -135,6 +135,7 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
   assert.equal($('export').disabled, true)
   for (const id of ['discover', 'recheck', 'repair', 'pause'])
     assert.equal(nodes.has(id), false)
+  assert.equal(nodes.has('fullPhotos'), true)
 
   // Pause during a request, reconnect, and continue from its committed cursor.
   let releaseHistory
@@ -497,6 +498,7 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
   await db.discover([thread], { complete: true })
   await db.put('threads', { ...thread, status: 'reached-start' })
   await db.saveMedia({ id: 'already-saved', status: 'saved' })
+  await db.put('meta', { key: 'settings', fullPhotos: true })
   for (const id of ['a-photo', 'b-photo', 'c-photo'])
     await db.saveMedia({
       id,
@@ -518,7 +520,16 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
       if (values.id === 'a-photo') {
         assert.match($('status').textContent, /Attachment 1 of 3 this run/)
         if (mediaCalls === 1)
-          return [{ result: { ok: false, error: 'media-not-found' } }]
+          return [
+            {
+              result: {
+                ok: false,
+                error: 'temporary request error',
+                code: 'MEDIA_DOWNLOAD_FAILED',
+                nativeCode: 'request-error',
+              },
+            },
+          ]
         assert.match($('status').textContent, /attempt 2\/3/)
       } else {
         assert.equal(values.id, 'b-photo')
@@ -538,11 +549,74 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
     return [{ result: { ok: true, value } }]
   }
   await $('connect').onclick()
+  assert.equal($('fullPhotos').checked, true)
+  $('fullPhotos').checked = false
+  await $('fullPhotos').onchange()
   await $('start').onclick()
   assert.equal(mediaCalls, 3)
   assert.equal((await db.get('media', 'already-saved')).status, 'saved')
   assert.equal((await db.get('media', 'a-photo')).status, 'saved')
+  assert.equal(
+    (await db.get('media', 'a-photo')).downloadAttempts[0].nativeCode,
+    'request-error',
+  )
+  assert.equal((await db.get('media', 'a-photo')).nativeCode, null)
   assert.equal((await db.get('media', 'b-photo')).status, 'saved')
   assert.equal((await db.get('media', 'c-photo')).status, 'pending')
   assert.equal($('status').textContent, 'Paused. Your progress is saved.')
+
+  // A not-found preview switches to full size without any retry sleeps.
+  await db.clearLocal()
+  await db.discover([thread], { complete: true })
+  await db.put('threads', { ...thread, status: 'reached-start' })
+  const mediaModes = []
+  browser.scripting.executeScript = async (options) => {
+    const [action, values] = options.args || []
+    if (!['media', 'chunk', 'release', 'refreshMedia'].includes(action))
+      return executeScript(options)
+    assert.notEqual(action, 'refreshMedia')
+    let value
+    if (action === 'media') {
+      mediaModes.push(values.photoMode)
+      if (values.photoMode === 'preview')
+        return [
+          {
+            result: {
+              ok: false,
+              code: 'MEDIA_NOT_FOUND',
+              nativeCode: 'media-not-found',
+              previewAdvertised: true,
+              error: 'media-not-found',
+            },
+          },
+        ]
+      assert.match($('status').textContent, /Full photo fallback/)
+      assert.match($('status').textContent, /attempt 1\/3/)
+      value = {
+        token: 'fallback',
+        size: 3,
+        mime: 'image/jpeg',
+        representation: 'full',
+        requestedRepresentation: 'full',
+      }
+    } else value = action === 'chunk' ? 'AQID' : true
+    return [{ result: { ok: true, value } }]
+  }
+  await db.saveMedia({
+    id: 'fallback',
+    jid: thread.jid,
+    mediaKind: 'photo',
+    expectedHash: 'fallback',
+    status: 'pending',
+  })
+  await $('connect').onclick()
+  const sleeps = t.mock.method(globalThis, 'setTimeout')
+  await $('start').onclick()
+  assert.deepEqual(mediaModes, ['preview', 'full'])
+  assert.equal(sleeps.mock.calls.length, 0)
+  sleeps.mock.restore()
+  const fallback = await db.get('media', 'fallback')
+  assert.equal(fallback.status, 'saved')
+  assert.equal(fallback.fallbackReason, 'preview-media-not-found')
+  assert.equal(fallback.requestedRepresentation, 'native-preview')
 })

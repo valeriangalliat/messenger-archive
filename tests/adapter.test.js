@@ -179,7 +179,12 @@ async function setup() {
       args,
       expected,
     )
-    if (!result.ok) throw Error(result.error)
+    if (!result.ok)
+      throw Object.assign(Error(result.error), {
+        code: result.code,
+        nativeCode: result.nativeCode,
+        previewAdvertised: result.previewAdvertised,
+      })
     return result.value
   }
   return {
@@ -191,6 +196,7 @@ async function setup() {
     bytes,
     digest,
     core: context.MessengerArchiveCore,
+    context,
   }
 }
 test('server discovery submits ONLY task 760 and never runs returned DB procedures', async () => {
@@ -519,12 +525,78 @@ test('native photo previews keep source identity separate, detect real MIME, and
   const full = await rpc('media', { ...job, photoMode: 'full' })
   assert.equal(calls.at(-1)[3].mediaOption, 0)
   assert.equal(full.representation, 'full')
+  assert.equal(full.requestedRepresentation, 'full')
+  await assert.rejects(
+    rpc('media', { ...job, photoMode: 'full', expectedHash: digest }),
+    /does not match/,
+  )
   await rpc('media', { ...job, mediaKind: 'video' })
   assert.equal(calls.at(-1)[3].mediaOption, 0)
   await assert.rejects(
     rpc('media', { ...job, mediaKind: 'video', expectedHash: digest }),
     /does not match/,
   )
+})
+
+test('media helper distinguishes not-found from transient errors and reports advertised previews', async () => {
+  const { rpc, modules, calls, digest, core } = await setup()
+  const job = {
+    expectedHash: digest,
+    mediaKind: 'photo',
+    photoMode: 'preview',
+    mediaEntry: core.pack(new Uint8Array([122, 0])),
+  }
+  for (const nativeCode of [
+    'media-not-found',
+    'request-error',
+    'runtime-error',
+    'signature-expired',
+    'direct-path-undefined',
+    'unknown-preview-error',
+  ]) {
+    modules.MAWBridge.getBridge = () => ({
+      sendAndReceive: async (...args) => {
+        calls.push(['bridge', ...args])
+        return { success: false, error: nativeCode }
+      },
+    })
+    const before = calls.length
+    await assert.rejects(
+      rpc('media', job),
+      (error) =>
+        error.code ===
+          (nativeCode === 'media-not-found'
+            ? 'MEDIA_NOT_FOUND'
+            : 'MEDIA_DOWNLOAD_FAILED') &&
+        error.nativeCode === nativeCode &&
+        error.previewAdvertised === true,
+    )
+    assert.equal(calls.length, before + 1)
+    assert.equal(calls.at(-1)[3].mediaOption, 1)
+  }
+  modules.MAWBridge.getBridge = () => ({
+    sendAndReceive: async (...args) => {
+      calls.push(['bridge', ...args])
+      throw Error('request timed out')
+    },
+  })
+  const before = calls.length
+  await assert.rejects(rpc('media', job), /request timed out/)
+  assert.equal(calls.length, before + 1)
+  assert.equal(calls.at(-1)[3].mediaOption, 1)
+})
+
+test('updated photo policy replaces the previous injected helper', async () => {
+  const { context, rpc } = await setup()
+  context.MessengerArchivePage = {
+    version: 6,
+    call: () => {
+      throw Error('stale helper called')
+    },
+  }
+  vm.runInContext(sources[1], context)
+  assert.equal(context.MessengerArchivePage.version, 7)
+  assert.equal((await rpc('probe')).account, '999')
 })
 
 test('history labels photos and videos from message types for the native downloader', async () => {

@@ -17,7 +17,7 @@ Reload the extension after changing its files.
 
 Keep Messenger and the archive tab open while collecting data. You can pause and resume; updates find new conversations and messages and retry failures. Interrupted history scans finish before a fresh scan starts for that chat. Check **Issues** for anything unresolved. Unencrypted history is skipped.
 
-Photos use native previews by default, with full photos available in settings. Videos remain full playable files.
+Photos use previews first unless **Download full photos** is checked. Messenger chooses full size directly when its metadata rules out supported previews. If advertised previews return `media-not-found` for every known source, the extension tries full size automatically, without a retry delay. Not-found requests are not repeated for the same source and representation during that pass. Timeouts and unknown errors retain normal retries and do not trigger full-photo fallback. Videos remain full playable files. Saved attachments keep their existing bytes.
 
 ## Keep your backups
 

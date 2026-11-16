@@ -156,6 +156,7 @@
         hash = data.has(12) ? fields(data.get(12)).get(1) : null
       return {
         progressive: data.has(15),
+        previewAdvertised: data.has(12) || data.has(15),
         thumbnailHash: hash?.length === 32 ? bytesToBase64(hash) : null,
       }
     } catch {

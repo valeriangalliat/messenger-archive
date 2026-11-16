@@ -1,6 +1,6 @@
 /* Runs in Messenger's MAIN world. Only the explicitly listed read operations are exposed. */
 ;(() => {
-  if (globalThis.MessengerArchivePage?.version === 5) return
+  if (globalThis.MessengerArchivePage?.version === 7) return
   const C = globalThis.MessengerArchiveCore
   const modules = new Map(),
     buffers = new Map()
@@ -375,7 +375,11 @@
   async function media(job) {
     const bridge = (await mod('MAWBridge')).getBridge()
     const preview = job.mediaKind === 'photo' && job.photoMode !== 'full'
+    const metadata = preview ? C.photoMetadata(C.unpack(job.mediaEntry)) : {}
     // Uses the export media reader; its native code may refresh Meta's local CDN URL cache.
+    // PreviewsOnly (1) checks both native preview types and chooses full size
+    // when neither is supported. Keep not-found distinct from transient failures
+    // so the caller can try other previews before a full-photo fallback.
     const result = await bridge.sendAndReceive(
       'backend',
       'dyiDownloadMediaV2',
@@ -387,10 +391,17 @@
         sortOrderMs: job.timestamp,
       },
     )
-    if (!result?.success)
-      throw Error(
-        `Attachment download failed: ${String(result?.error || 'no result')}`,
-      )
+    if (!result?.success) {
+      const nativeCode = String(result?.error || 'no result')
+      throw Object.assign(Error(`Attachment download failed: ${nativeCode}`), {
+        code:
+          nativeCode === 'media-not-found'
+            ? 'MEDIA_NOT_FOUND'
+            : 'MEDIA_DOWNLOAD_FAILED',
+        nativeCode,
+        previewAdvertised: metadata.previewAdvertised ?? null,
+      })
+    }
     const payload = result.value,
       validated = payload.validatedResult
     const plaintext = validated?.validatedPlaintext
@@ -417,7 +428,6 @@
       )
     }
     const sourceVerified = matches(job.expectedHash)
-    const metadata = preview ? C.photoMetadata(C.unpack(job.mediaEntry)) : {}
     const thumbnailVerified = metadata.thumbnailHash
       ? matches(metadata.thumbnailHash)
       : null
@@ -543,7 +553,7 @@
     },
   }
   globalThis.MessengerArchivePage = Object.freeze({
-    version: 5,
+    version: 7,
     async call(action, args = {}, expectedAccount) {
       try {
         if (!Object.hasOwn(actions, action))
@@ -557,6 +567,8 @@
           ok: false,
           error: String(e.message || e),
           code: e.code || null,
+          nativeCode: e.nativeCode || null,
+          previewAdvertised: e.previewAdvertised ?? null,
         }
       }
     },

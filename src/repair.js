@@ -72,6 +72,12 @@ export async function retryAttachment(
       timestamp: job.timestamp,
       error: error ? String(error.message || error) : null,
       code: error?.code || null,
+      nativeCode: error?.nativeCode || null,
+      representation:
+        job.mediaKind === 'photo' && job.photoMode !== 'full'
+          ? 'native-preview'
+          : 'full',
+      previewAdvertised: error?.previewAdvertised ?? null,
     }
     job = {
       ...job,
@@ -81,7 +87,11 @@ export async function retryAttachment(
   }
   const fatal = (error) =>
     ['ACCOUNT_CHANGED', 'DISCONNECTED'].includes(error.code)
-  for (const [index, candidate] of candidates.entries()) {
+  const missingPreviews = []
+  let uncertainPreview = false
+  async function trySource(candidate, index, mode, fallback = false) {
+    select(candidate)
+    job = { ...job, photoMode: mode }
     const report = (operation, attempt, details = {}) =>
       progress({
         operation,
@@ -89,52 +99,88 @@ export async function retryAttachment(
         source: index + 1,
         sources: candidates.length,
         job,
+        fallback,
         ...details,
       })
-    try {
-      select(candidate)
-      // The retry budget belongs to this source. Every source gets a turn.
-      const result = await retry(
-        async (attempt) => {
-          if (attempt === 1) {
-            report('refreshMedia', attempt + 1)
-            try {
-              select(await rpc('refreshMedia', job))
-              await record('refreshMedia')
-            } catch (error) {
-              await record('refreshMedia', error)
-              if (fatal(error)) throw error
+    // Each source and representation has its own transient retry budget.
+    const result = await retry(
+      async (attempt) => {
+        if (attempt === 1) {
+          report('refreshMedia', attempt + 1)
+          try {
+            select(await rpc('refreshMedia', job))
+            await record('refreshMedia')
+          } catch (error) {
+            await record('refreshMedia', error)
+            if (fatal(error)) throw error
+          }
+        }
+        let result
+        report('media', attempt + 1)
+        try {
+          result = await rpc('media', job)
+        } catch (error) {
+          await record('media', error)
+          throw error
+        }
+        try {
+          await record('media')
+        } catch (error) {
+          if (result?.token)
+            await rpc('release', { token: result.token }).catch(() => {})
+          throw error
+        }
+        return result
+      },
+      (attempt, delay, error) =>
+        report('waiting', attempt, {
+          delay,
+          error: String(error.message || error),
+        }),
+    )
+    return {
+      job,
+      result:
+        fallback && result
+          ? {
+              ...result,
+              representation: 'full-fallback',
+              requestedRepresentation: 'native-preview',
+              fallbackReason: 'preview-media-not-found',
             }
-          }
-          let result
-          report('media', attempt + 1)
-          try {
-            result = await rpc('media', job)
-          } catch (error) {
-            await record('media', error)
-            throw error
-          }
-          try {
-            await record('media')
-          } catch (error) {
-            if (result?.token)
-              await rpc('release', { token: result.token }).catch(() => {})
-            throw error
-          }
-          return result
-        },
-        (attempt, delay, error) =>
-          report('waiting', attempt, {
-            delay,
-            error: String(error.message || error),
-          }),
-      )
-      return { job, result }
+          : result,
+    }
+  }
+  for (const [index, candidate] of candidates.entries()) {
+    try {
+      return await trySource(candidate, index, initial.photoMode)
     } catch (error) {
       lastError = error
+      if (
+        error.code === 'MEDIA_NOT_FOUND' &&
+        error.previewAdvertised === true &&
+        job.mediaKind === 'photo' &&
+        initial.photoMode !== 'full'
+      )
+        missingPreviews.push({ source: attachmentSource(job), index })
+      else if (
+        error.code !== 'MEDIA_NOT_FOUND' ||
+        error.previewAdvertised !== false
+      )
+        uncertainPreview = true
       if (fatal(error)) break
     }
   }
+  // Exhaust the smaller sources first. An unknown failure leaves uncertainty;
+  // only explicit not-found results for advertised previews allow escalation.
+  if (!uncertainPreview)
+    for (const { source, index } of missingPreviews)
+      try {
+        return await trySource(source, index, 'full', true)
+      } catch (error) {
+        lastError = error
+        if (fatal(error)) break
+      }
   throw Object.assign(lastError || Error('No attachment sources available.'), {
     job,
   })

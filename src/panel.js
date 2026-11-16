@@ -101,7 +101,11 @@ async function rpc(action, args = {}) {
   if (!result.ok) {
     if (['ACCOUNT_CHANGED', 'DISCONNECTED'].includes(result.code))
       disconnected()
-    throw Object.assign(Error(result.error), { code: result.code })
+    throw Object.assign(Error(result.error), {
+      code: result.code,
+      nativeCode: result.nativeCode,
+      previewAdvertised: result.previewAdvertised,
+    })
   }
   return result.value
 }
@@ -299,9 +303,12 @@ async function retry(fn, waiting = () => {}) {
       return await fn(attempt)
     } catch (e) {
       if (
-        ['HISTORY_CURSOR_STUCK', 'ACCOUNT_CHANGED', 'DISCONNECTED'].includes(
-          e.code,
-        )
+        [
+          'HISTORY_CURSOR_STUCK',
+          'ACCOUNT_CHANGED',
+          'DISCONNECTED',
+          'MEDIA_NOT_FOUND',
+        ].includes(e.code)
       )
         throw e
       error = e
@@ -441,6 +448,7 @@ async function fetchMedia() {
         backupId: undefined,
         path: undefined,
         error: null,
+        nativeCode: null,
         savedAt: Date.now(),
       })
       stats.saved++
@@ -450,6 +458,7 @@ async function fetchMedia() {
         ...(e.job || job),
         status: 'error',
         error: e.message,
+        nativeCode: e.nativeCode || null,
       })
     } finally {
       progress.stop()

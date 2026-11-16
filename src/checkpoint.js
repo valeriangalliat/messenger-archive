@@ -126,6 +126,7 @@ export async function makeCheckpoint(
         sha256: job.sha256,
         representation: job.representation,
         requestedRepresentation: job.requestedRepresentation,
+        fallbackReason: job.fallbackReason,
         verification: job.verification,
         status: 'exported',
         backupId,
