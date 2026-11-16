@@ -494,7 +494,8 @@ test('native photo previews keep source identity separate, detect real MIME, and
   assert.equal(calls.at(-1)[3].mediaOption, 1)
   assert.equal(preview.mime, 'image/png')
   assert.equal(preview.nativeMime, 'image/jpeg')
-  assert.equal(preview.representation, 'native-preview')
+  assert.equal(preview.representation, 'preview')
+  assert.equal(preview.requestedRepresentation, 'preview')
   assert.equal(preview.verification.sourceHashVerified, false)
   assert.equal(preview.verification.nativeSkipValidation, true)
   assert.equal(preview.sha256, pngHash.toString('hex'))
@@ -513,14 +514,15 @@ test('native photo previews keep source identity separate, detect real MIME, and
     new Uint8Array([98, 34, 10, 32, ...pngHash, 122, 0]),
   )
   const progressive = await rpc('media', job)
-  assert.equal(progressive.representation, 'native-preview')
+  assert.equal(progressive.representation, 'preview')
   assert.equal(progressive.verification.thumbnailHashVerified, false)
   assert.equal(progressive.verification.sourceHashVerified, false)
 
   responseBytes = png
   job.expectedHash = pngHash.toString('base64url')
   const fallback = await rpc('media', job)
-  assert.equal(fallback.representation, 'full-fallback')
+  assert.equal(fallback.representation, 'full')
+  assert.equal(fallback.requestedRepresentation, 'preview')
   assert.equal(fallback.verification.sourceHashVerified, true)
   const full = await rpc('media', { ...job, photoMode: 'full' })
   assert.equal(calls.at(-1)[3].mediaOption, 0)
@@ -589,13 +591,13 @@ test('media helper distinguishes not-found from transient errors and reports adv
 test('updated photo policy replaces the previous injected helper', async () => {
   const { context, rpc } = await setup()
   context.MessengerArchivePage = {
-    version: 6,
+    version: 7,
     call: () => {
       throw Error('stale helper called')
     },
   }
   vm.runInContext(sources[1], context)
-  assert.equal(context.MessengerArchivePage.version, 7)
+  assert.equal(context.MessengerArchivePage.version, 8)
   assert.equal((await rpc('probe')).account, '999')
 })
 

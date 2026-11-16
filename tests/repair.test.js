@@ -92,12 +92,12 @@ test('all preview sources are tried once before an immediate verified full-photo
     ['original', 'preview'],
     ['alternate', 'full'],
   ])
-  assert.equal(result.result.representation, 'full-fallback')
-  assert.equal(result.result.requestedRepresentation, 'native-preview')
+  assert.equal(result.result.representation, 'full')
+  assert.equal(result.result.requestedRepresentation, 'preview')
   assert.equal(result.result.fallbackReason, 'preview-media-not-found')
   assert.deepEqual(
     result.job.downloadAttempts.map((a) => a.representation),
-    ['native-preview', 'native-preview', 'full'],
+    ['preview', 'preview', 'full'],
   )
   assert.ok(events.at(-1).fallback)
   assert.equal(events.at(-1).attempt, 1)

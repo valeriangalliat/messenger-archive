@@ -555,3 +555,75 @@ test('changed retained messages are included in the next delta by content hash',
     delta.checkpoint.backupId,
   )
 })
+
+test('exports normalize active-run labels and earlier references without rewriting saved data or bytes', async (t) => {
+  const { db, account } = await create(t)
+  await baseline(db)
+  const legacy = {
+    ...(await db.get('media', 'asset')),
+    representation: 'full-fallback',
+    requestedRepresentation: 'native-preview',
+    fallbackReason: 'preview-media-not-found',
+    downloadAttempts: [
+      {
+        operation: 'media',
+        representation: 'native-preview',
+        error: 'media-not-found',
+      },
+      { operation: 'media', representation: 'full', error: null },
+    ],
+  }
+  await db.saveMedia(legacy)
+  await db.saveMedia({
+    id: 'pending',
+    status: 'error',
+    error: 'media-not-found',
+    downloadAttempts: legacy.downloadAttempts,
+  })
+  const stored = await db.get('media', 'asset')
+  const first = await prepare(db, account)
+  const asset = JSON.parse(first.files['attachments.json']).find(
+    (m) => m.id === 'asset',
+  )
+  assert.equal(asset.representation, 'full')
+  assert.equal(asset.requestedRepresentation, 'preview')
+  assert.equal(asset.fallbackReason, legacy.fallbackReason)
+  assert.deepEqual(
+    asset.downloadAttempts.map((a) => a.representation),
+    ['preview', 'full'],
+  )
+  assert.equal(first.checkpoint.media[0].representation, 'full')
+  assert.equal(first.checkpoint.media[0].requestedRepresentation, 'preview')
+  assert.equal(
+    first.checkpoint.pendingMedia[0].downloadAttempts[0].representation,
+    'preview',
+  )
+  assert.deepEqual([...first.files['media/asset.png']], [1, 2, 3])
+  assert.deepEqual(await db.get('media', 'asset'), stored)
+  assert.equal(
+    (await db.get('media', 'pending')).downloadAttempts[0].representation,
+    'native-preview',
+  )
+
+  // Simulate an older confirmed checkpoint while keeping the cached attachment.
+  const checkpoint = {
+    ...first.checkpoint,
+    media: first.checkpoint.media.map((m) => ({
+      ...m,
+      representation: 'full-fallback',
+      requestedRepresentation: 'native-preview',
+    })),
+  }
+  await db.importBackup(checkpoint)
+  const delta = await prepare(db, account)
+  assert.equal(delta.checkpoint.media[0].representation, 'full')
+  assert.equal(delta.checkpoint.media[0].requestedRepresentation, 'preview')
+  assert.equal(delta.checkpoint.media[0].fallbackReason, legacy.fallbackReason)
+  assert.equal(delta.checkpoint.media[0].backupId, first.checkpoint.backupId)
+  assert.equal(delta.files['media/asset.png'], undefined)
+  assert.deepEqual(await db.get('media', 'asset'), stored)
+  assert.equal(
+    (await db.get('meta', 'checkpoint')).value.media[0].representation,
+    'full-fallback',
+  )
+})

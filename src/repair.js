@@ -75,7 +75,7 @@ export async function retryAttachment(
       nativeCode: error?.nativeCode || null,
       representation:
         job.mediaKind === 'photo' && job.photoMode !== 'full'
-          ? 'native-preview'
+          ? 'preview'
           : 'full',
       previewAdvertised: error?.previewAdvertised ?? null,
     }
@@ -144,8 +144,8 @@ export async function retryAttachment(
         fallback && result
           ? {
               ...result,
-              representation: 'full-fallback',
-              requestedRepresentation: 'native-preview',
+              representation: 'full',
+              requestedRepresentation: 'preview',
               fallbackReason: 'preview-media-not-found',
             }
           : result,

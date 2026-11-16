@@ -1,3 +1,4 @@
+import { normalizeAttachment } from './attachments.js'
 import {
   makeCheckpoint,
   mediaMatches,
@@ -39,7 +40,7 @@ export async function archiveZip(
     unresolvedMedia,
   ] = await Promise.all([
     archive.all('threads'),
-    archive.all('media'),
+    archive.all('media').then((jobs) => jobs.map(normalizeAttachment)),
     archive.get('meta', 'names'),
     archive.get('meta', 'inventory'),
     archive.count('messages'),

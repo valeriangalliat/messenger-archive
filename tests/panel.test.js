@@ -618,5 +618,5 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
   const fallback = await db.get('media', 'fallback')
   assert.equal(fallback.status, 'saved')
   assert.equal(fallback.fallbackReason, 'preview-media-not-found')
-  assert.equal(fallback.requestedRepresentation, 'native-preview')
+  assert.equal(fallback.requestedRepresentation, 'preview')
 })

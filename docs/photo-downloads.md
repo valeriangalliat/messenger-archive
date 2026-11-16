@@ -16,9 +16,10 @@ These are two different forms of preview:
 - A downloadable thumbnail is a separate attachment described by the media entry.
 
 Messenger makes this choice inside its native downloader. The extension records
-`requestedRepresentation: "native-preview"` and hashes the returned bytes. If
-they match the original photo's hash, it records `representation: "full-fallback"`.
-That label identifies the saved bytes; it does not prove that a separate thumbnail
+`requestedRepresentation: "preview"` and hashes the returned bytes. If
+they match the original photo's hash, it records `representation: "full"`;
+otherwise, it records `representation: "preview"`.
+The representation identifies the saved bytes; it does not prove that a separate thumbnail
 was absent from every Messenger storage location.
 
 A `media-not-found` result ends the current source and representation immediately.
@@ -45,9 +46,14 @@ for known preview sources to recover a full photo without requiring a setting
 change. It does not reinterpret arbitrary download failures as missing previews.
 
 The archive records native error codes and requested representations for each
-attempt. A successful explicit fallback is labelled `full-fallback` with
+attempt. A successful explicit fallback has `representation: "full"`,
+`requestedRepresentation: "preview"`, and
 `fallbackReason: "preview-media-not-found"`; its bytes must match the original
 photo's SHA-256. The fallback reason also travels in portable checkpoints.
+
+Exports normalize the older `native-preview` and `full-fallback` labels to
+`preview` and `full`, including attempt history and earlier checkpoint references.
+This does not rewrite browser storage, change file bytes, or restart an active run.
 
 Existing saved attachments retain their bytes. Updating the policy does not
 redownload them or require deleting the archive.

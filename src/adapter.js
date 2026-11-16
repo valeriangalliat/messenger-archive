@@ -1,6 +1,6 @@
 /* Runs in Messenger's MAIN world. Only the explicitly listed read operations are exposed. */
 ;(() => {
-  if (globalThis.MessengerArchivePage?.version === 7) return
+  if (globalThis.MessengerArchivePage?.version === 8) return
   const C = globalThis.MessengerArchiveCore
   const modules = new Map(),
     buffers = new Map()
@@ -457,12 +457,8 @@
           'application/octet-stream',
       ),
       nativeMime: validated.mimeType || payload.unvalidatedMimeType || null,
-      representation: preview
-        ? sourceVerified
-          ? 'full-fallback'
-          : 'native-preview'
-        : 'full',
-      requestedRepresentation: preview ? 'native-preview' : 'full',
+      representation: preview && !sourceVerified ? 'preview' : 'full',
+      requestedRepresentation: preview ? 'preview' : 'full',
       verification: {
         storedSha256: 'computed',
         sourceHashVerified: sourceVerified,
@@ -553,7 +549,7 @@
     },
   }
   globalThis.MessengerArchivePage = Object.freeze({
-    version: 7,
+    version: 8,
     async call(action, args = {}, expectedAccount) {
       try {
         if (!Object.hasOwn(actions, action))
