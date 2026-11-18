@@ -23,7 +23,9 @@ Encrypted direct chats with missing names use a server contact lookup. The exten
 
 ## Keep your backups
 
-Each ZIP contains new or changed messages and attachment bytes, plus a portable checkpoint. **Keep the baseline and every delta ZIP.** Import the latest ZIP or its checkpoint with the same Messenger account to resume on another laptop or after losing browser storage. The full archive still requires the earlier ZIPs; browsing and merging tools are not included.
+Each regular ZIP contains new or changed messages and attachment bytes, plus a portable checkpoint. **Keep the baseline and every delta ZIP.** Import the latest ZIP or its checkpoint with the same Messenger account to resume on another laptop or after losing browser storage.
+
+Use **Download standalone ZIP** under **Backup and browser storage** to create a new baseline from the browser's saved data. It requires the browser to still have every previously exported message and attachment.
 
 Storage controls show usage and let you remove confirmed exported data while keeping unfinished work and the checkpoint. Automatic attachment cleanup is optional and runs only after a successful download. **Delete all local data** also removes unfinished work and the local checkpoint; downloaded ZIPs stay on disk.
 

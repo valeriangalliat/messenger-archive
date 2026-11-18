@@ -21,6 +21,7 @@
     <summary>Backup and browser storage</summary>
     <p>Each ZIP contains new messages and attachments plus retries. Keep the baseline and every delta. Import the latest ZIP or its checkpoint.json on a new laptop. Import can also match an existing local archive to its baseline without removing unfinished work. To switch backup chains, use empty local data.</p>
     <label>Import backup ZIP or checkpoint <input id="importBackup" type="file" accept=".zip,.json" disabled></label>
+    <p><button id="exportStandalone" type="button" disabled>Download standalone ZIP</button> Requires all previously exported messages and attachments to still be in this browser.</p>
     <p id="storage"></p>
     <p><label><input id="autoCleanup" type="checkbox" disabled> Automatically remove exported attachment bytes after a successful download</label></p>
     <p><label><input id="retainMessages" type="checkbox" checked disabled> Retain exported messages in the browser</label><br>Turn this off to remove successful exported messages after download or during cleanup. Checkpoints, failed messages, unfinished work, and attachment references remain. Full browsing then needs the ZIPs.</p>

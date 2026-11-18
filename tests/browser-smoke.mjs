@@ -580,6 +580,31 @@ try {
     JSON.parse(delta['checkpoint.json']).names['699399875'],
     'Sam Roelants',
   )
+  const beforeStandalone = await messenger.evaluate('window.__calls.length')
+  await panel.$eval('#exportStandalone', (button) => button.click())
+  await panel.waitForFunction(() =>
+    document
+      .getElementById('status')
+      .textContent.includes('This ZIP is standalone.'),
+  )
+  const [standaloneName] = (await readdir(downloadsPath)).filter(
+    (name) => name !== downloads[0] && name !== deltaName,
+  )
+  const standalone = await readZip(
+    await readFile(join(downloadsPath, standaloneName)),
+  )
+  const standaloneManifest = JSON.parse(standalone['manifest.json'])
+  assert.deepEqual(standaloneManifest.dependencies, [])
+  assert.equal(standaloneManifest.messages, 3)
+  assert.equal(standaloneManifest.attachmentsSaved, 1)
+  assert.equal(
+    JSON.parse(standalone['contacts.json'])['699399875'],
+    'Sam Roelants',
+  )
+  assert.equal(
+    await messenger.evaluate('window.__calls.length'),
+    beforeStandalone,
+  )
   console.log('Testing every issue is accessible across pages…')
   await panel.evaluate(async () => {
     const { openArchive } = await import('../src/db.js')

@@ -47,11 +47,18 @@ async function asset(db, id = 'asset', bytes = [1, 2, 3]) {
   await db.saveChunk(id, 0, new Uint8Array(bytes))
   await db.saveMedia({ ...job, status: 'saved' })
 }
-async function prepare(db, account) {
+async function prepare(db, account, options) {
   let snapshot
-  const blob = await archiveZip(db, account, undefined, undefined, (value) => {
-    snapshot = value
-  })
+  const blob = await archiveZip(
+    db,
+    account,
+    undefined,
+    undefined,
+    (value) => {
+      snapshot = value
+    },
+    options,
+  )
   const files = await readZip(Buffer.from(await blob.arrayBuffer()))
   return {
     blob,
@@ -72,6 +79,65 @@ const recordsIn = (files) =>
     .flatMap(([, bytes]) =>
       bytes.toString().split('\n').filter(Boolean).map(JSON.parse),
     )
+
+test('standalone ZIP replaces the baseline with all retained messages and media', async (t) => {
+  const { db, account } = await create(t)
+  await baseline(db)
+  const first = await prepare(db, account)
+  await db.finalizeBackup(first.snapshot)
+  await page(db, [record('new', 200)])
+  await asset(db, 'recovered')
+  const standalone = await prepare(db, account, { standalone: true })
+  assert.deepEqual(standalone.manifest.dependencies, [])
+  assert.deepEqual(standalone.checkpoint.dependencies, [])
+  assert.deepEqual(
+    recordsIn(standalone.files)
+      .map((item) => item.id)
+      .sort(),
+    ['boundary', 'new', 'old'],
+  )
+  assert.deepEqual(standalone.files['media/asset.png'], Buffer.from([1, 2, 3]))
+  assert.deepEqual(
+    standalone.files['media/recovered.png'],
+    Buffer.from([1, 2, 3]),
+  )
+  assert.equal(
+    (await db.get('meta', 'checkpoint')).value.backupId,
+    first.checkpoint.backupId,
+  )
+  await db.finalizeBackup(standalone.snapshot)
+  const next = await prepare(db, account)
+  assert.deepEqual(
+    next.checkpoint.dependencies.map((item) => item.backupId),
+    [standalone.checkpoint.backupId],
+  )
+  assert.equal(next.manifest.messages, 0)
+  assert.equal(next.manifest.attachmentsSaved, 0)
+})
+
+test('standalone ZIP fails when earlier backups contain data missing from the browser', async (t) => {
+  const { db, account } = await create(t)
+  await baseline(db)
+  const first = await prepare(db, account)
+  await db.finalizeBackup(first.snapshot, {
+    cleanup: true,
+    retainMessages: false,
+  })
+  await assert.rejects(
+    prepare(db, account, { standalone: true }),
+    /Some attachments are only in earlier ZIPs/,
+  )
+  await asset(db)
+  await page(db, [record('new', 200), record('another', 300)])
+  await assert.rejects(
+    prepare(db, account, { standalone: true }),
+    /Some messages are only in earlier ZIPs/,
+  )
+  assert.equal(
+    (await db.get('meta', 'checkpoint')).value.backupId,
+    first.checkpoint.backupId,
+  )
+})
 
 test('name corrections travel in delta metadata and restore without re-exporting messages or media', async (t) => {
   const { db, account } = await create(t)

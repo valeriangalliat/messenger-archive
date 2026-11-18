@@ -20,6 +20,7 @@ export async function archiveZip(
   progress = () => {},
   cancelled = () => false,
   prepared = () => {},
+  { standalone = false } = {},
 ) {
   if (archive.account && String(account) !== archive.account)
     throw Error('Archive belongs to a different Messenger account.')
@@ -46,7 +47,17 @@ export async function archiveZip(
     archive.count('messages'),
     archive.all('mediaIssues'),
   ])
-  const previous = (await archive.get('meta', 'checkpoint'))?.value
+  const parent = (await archive.get('meta', 'checkpoint'))?.value
+  const previous = standalone ? null : parent
+  if (standalone && parent) {
+    const localAssets = new Map(media.map((job) => [job.id, job]))
+    if (
+      parent.media.some((item) => localAssets.get(item.id)?.status !== 'saved')
+    )
+      throw Error(
+        'Some attachments are only in earlier ZIPs. The browser cannot create a complete standalone ZIP.',
+      )
+  }
   const known = new Map(
     (previous?.messages || []).map((m) => [messageKey(m), m]),
   )
@@ -54,7 +65,7 @@ export async function archiveZip(
   const backupId = crypto.randomUUID()
   const included = []
   const messageSnapshot = []
-  const names = { ...previous?.names, ...contacts?.value }
+  const names = { ...parent?.names, ...contacts?.value }
   for (const t of threads)
     if (
       t.jid === `${t.id}@msgr` &&
@@ -114,6 +125,13 @@ export async function archiveZip(
     throw Error(
       'Message count changed or conversation records are missing. Retry export.',
     )
+  if (standalone && parent) {
+    const localMessages = new Set(messageSnapshot.map(messageKey))
+    if (parent.messages.some((m) => !localMessages.has(messageKey(m))))
+      throw Error(
+        'Some messages are only in earlier ZIPs. The browser cannot create a complete standalone ZIP.',
+      )
+  }
   await json('threads.json', threads)
   await json('contacts.json', names)
   const saved = media.filter(
@@ -190,7 +208,7 @@ export async function archiveZip(
   // Caller holds the account lock through download completion and finalization.
   // Record revisions bind cleanup to the bytes and messages packed in this ZIP.
   const snapshot = {
-    parentId: previous?.backupId || null,
+    parentId: parent?.backupId || null,
     checkpoint,
     messages: messageSnapshot,
     media: media

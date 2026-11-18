@@ -35,6 +35,7 @@ const enabled = () => {
       : 'Pause'
     : archiveState.label || 'Start archive'
   $('export').disabled = !archive || !archiveState.hasData || busy
+  $('exportStandalone').disabled = $('export').disabled
   $('connect').disabled = busy
   for (const id of [
     'importBackup',
@@ -550,7 +551,7 @@ async function download(blob, filename, started) {
     URL.revokeObjectURL(url)
   }
 }
-async function exportArchive() {
+async function exportArchive(standalone = false) {
   try {
     let snapshot
     const options = {
@@ -566,6 +567,7 @@ async function exportArchive() {
         snapshot = value
         await archive.put('meta', { key: 'pendingExport', snapshot, options })
       },
+      { standalone },
     )
     const filename = `messenger-archive-${new Date().toISOString().replace(/[:.]/g, '-')}.zip`
     const path = await download(blob, filename, (downloadId) =>
@@ -577,7 +579,11 @@ async function exportArchive() {
       }),
     )
     await archive.finalizeBackup(snapshot, { ...options, filename: path })
-    say(`Saved archive: ${path}. Keep this ZIP and its dependencies.`)
+    say(
+      snapshot.checkpoint.dependencies.length
+        ? `Saved archive: ${path}. Keep this ZIP and its dependencies.`
+        : `Saved archive: ${path}. This ZIP is standalone.`,
+    )
   } catch (error) {
     if (error.name !== 'AbortError') throw error
     say(error.message)
@@ -701,6 +707,7 @@ $('start').onclick = () => {
   if (connected) return work(start, 'archive')
 }
 $('export').onclick = () => work(exportArchive, 'export')
+$('exportStandalone').onclick = () => work(() => exportArchive(true), 'export')
 $('importBackup').onchange = () =>
   work(async () => {
     const file = $('importBackup').files?.[0]
