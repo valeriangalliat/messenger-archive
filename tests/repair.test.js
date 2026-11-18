@@ -260,41 +260,63 @@ test('pause returns the latest checkpoint and account changes stop trying other 
   )
   assert.deepEqual(calls, ['media'])
 })
-test('alternate sources are tried first and hash failures remain failures', async () => {
-  const job = {
-    id: 'hash',
-    expectedHash: 'hash',
-    status: 'error',
-    mediaEntry: 'forwarded',
-    protocolMsgId: { chat: 'b' },
-    sources: [
-      {
-        id: 'hash',
-        expectedHash: 'hash',
-        mediaEntry: 'original',
-        protocolMsgId: { chat: 'a' },
+test('the oldest source is tried first regardless of which message the job stores', async () => {
+  const original = { ...source('original'), timestamp: 10 }
+  const forwarded = { ...source('forwarded'), timestamp: 20 }
+  const undated = { ...source('undated'), timestamp: null }
+  for (const [primary, copy] of [
+    [original, forwarded],
+    [forwarded, original],
+  ]) {
+    const calls = []
+    const result = await retryAttachment(
+      { ...primary, status: 'error', sources: [undated, copy] },
+      async (action, value) => {
+        calls.push([action, value.messageId])
+        return { token: 'verified' }
       },
-    ],
+      retry,
+    )
+    assert.equal(result.job.messageId, original.messageId)
+    assert.deepEqual(calls, [['media', original.messageId]])
   }
+})
+test('hash mismatches exhaust the oldest source before trying alternates', async () => {
+  const original = { ...source('original'), timestamp: 10 }
+  const forwarded = { ...source('forwarded'), timestamp: 20 }
+  const job = { ...original, sources: [forwarded] }
+  const mismatch = Object.assign(
+    Error('Attachment download failed: hash-mismatch'),
+    {
+      nativeCode: 'hash-mismatch',
+    },
+  )
   const calls = []
   const result = await retryAttachment(
     job,
     async (action, value) => {
-      calls.push(action)
-      assert.equal(value.mediaEntry, 'original')
+      calls.push([action, value.messageId])
+      if (action === 'refreshMedia') return value
+      if (value.messageId === original.messageId) throw mismatch
       return { token: 'verified' }
     },
     retry,
   )
-  assert.equal(result.job.protocolMsgId.chat, 'a')
-  assert.deepEqual(calls, ['media'])
+  assert.equal(result.job.messageId, forwarded.messageId)
+  assert.deepEqual(calls, [
+    ['media', original.messageId],
+    ['refreshMedia', original.messageId],
+    ['media', original.messageId],
+    ['media', original.messageId],
+    ['media', forwarded.messageId],
+  ])
   await assert.rejects(
     retryAttachment(
       job,
       async (action, value) => {
         assert.equal(value.expectedHash, 'hash')
-        if (action === 'refreshMedia') throw Error('unavailable')
-        throw Error('hash-mismatch')
+        if (action === 'refreshMedia') return value
+        throw mismatch
       },
       retry,
     ),

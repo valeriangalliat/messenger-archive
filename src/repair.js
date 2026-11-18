@@ -42,7 +42,14 @@ export async function retryAttachment(
   checkpoint = async () => {},
   progress = () => {},
 ) {
-  const candidates = attachmentSources(initial)
+  const timestamp = (source) =>
+    Number.isSafeInteger(source.timestamp)
+      ? source.timestamp
+      : Number.MAX_SAFE_INTEGER
+  // Messenger can reuse a newer message's media entry once it has seen it.
+  const candidates = attachmentSources(initial).sort(
+    (a, b) => timestamp(a) - timestamp(b),
+  )
   const sources = new Map(candidates.map((s) => [sourceKey(s), s]))
   let job = { ...initial },
     lastError
