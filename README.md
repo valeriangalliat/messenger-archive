@@ -1,10 +1,10 @@
 # Messenger Archive
 
-A Firefox and Chrome extension for incremental ZIP backups of encrypted Messenger conversations and attachments. Plain JavaScript; no build step.
+A Firefox and Chrome extension for incremental ZIP backups of encrypted Messenger conversations and attachments. It runs directly from this directory without a build step or dependency install.
 
 ## Install
 
-- **Firefox:** open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on**, and select `manifest.json`.
+- **Firefox 142+:** open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on**, and select `manifest.json`.
 - **Chrome 121+:** open `chrome://extensions`, enable **Developer mode**, and choose this directory with **Load unpacked**.
 
 Reload the extension after changing its files.
@@ -17,9 +17,9 @@ Reload the extension after changing its files.
 
 Keep Messenger and the archive tab open while collecting data. You can pause and resume; updates find new conversations and messages and retry failures. Interrupted history scans finish before a fresh scan starts for that chat. Check **Issues** for anything unresolved. Unencrypted history is skipped.
 
-All attachments download at full size. The extension checks each file's SHA-256 against its message metadata before saving it. Missing files try other known sources; transient failures retry and refresh download metadata.
+The extension downloads full-size attachments and checks each file's SHA-256 against its message metadata. When several messages share an attachment, it starts with the oldest source. If that source reports the file missing, the extension tries the next one. It retries temporary failures and refreshes download metadata.
 
-Encrypted direct chats with missing names use a server contact lookup. The extension reads the response without applying Messenger database procedures. Names travel in `contacts.json` and the portable checkpoint; failed lookups appear in Issues and retry on the next run.
+The extension looks up missing contact names for encrypted direct chats. Names are saved in `contacts.json` and the portable checkpoint. Failed lookups appear under **Issues** and are retried on the next run.
 
 ## Keep your backups
 
@@ -39,4 +39,9 @@ pnpm check
 pnpm test
 ```
 
-`pnpm format` applies formatting. `pnpm test:browser` runs the extension with fake Messenger responses in an isolated browser profile.
+`pnpm format` applies formatting. To run the optional Chrome smoke test with fake Messenger responses, first install the test browser:
+
+```sh
+pnpm exec puppeteer browsers install chrome
+pnpm test:browser
+```
