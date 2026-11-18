@@ -238,6 +238,7 @@ try {
         MAWBridge: {
           getBridge: () => ({
             sendAndReceive: async (...args) => {
+              if (args[2].mediaOption !== 0) throw Error('Expected full size')
               window.__calls.push(['media', args[0], args[1]])
               return {
                 success: true,

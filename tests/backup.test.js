@@ -505,7 +505,7 @@ test('ZIP import rejects missing current assets or messages, mismatched manifest
   )
 })
 
-test('an earlier exported representation and an unresolved replacement both survive checkpoint migration', async (t) => {
+test('an earlier exported attachment and an unresolved replacement both survive checkpoint migration', async (t) => {
   const { db, account } = await create(t)
   await baseline(db)
   const first = await prepare(db, account)
@@ -556,74 +556,49 @@ test('changed retained messages are included in the next delta by content hash',
   )
 })
 
-test('exports normalize active-run labels and earlier references without rewriting saved data or bytes', async (t) => {
+test('ZIPs use current metadata for saved attachments, retry jobs, and earlier references', async (t) => {
   const { db, account } = await create(t)
   await baseline(db)
-  const legacy = {
+  const obsolete = { obsoleteField: 'obsolete value' }
+  await db.saveMedia({
     ...(await db.get('media', 'asset')),
-    representation: 'full-fallback',
-    requestedRepresentation: 'native-preview',
-    fallbackReason: 'preview-media-not-found',
-    downloadAttempts: [
-      {
-        operation: 'media',
-        representation: 'native-preview',
-        error: 'media-not-found',
-      },
-      { operation: 'media', representation: 'full', error: null },
-    ],
-  }
-  await db.saveMedia(legacy)
+    ...obsolete,
+  })
   await db.saveMedia({
     id: 'pending',
     status: 'error',
     error: 'media-not-found',
-    downloadAttempts: legacy.downloadAttempts,
+    ...obsolete,
+    sources: [{ id: 'pending', messageId: 'alternate', ...obsolete }],
+    downloadAttempts: [
+      { operation: 'media', code: 'MEDIA_NOT_FOUND', ...obsolete },
+    ],
   })
-  const stored = await db.get('media', 'asset')
   const first = await prepare(db, account)
-  const asset = JSON.parse(first.files['attachments.json']).find(
-    (m) => m.id === 'asset',
-  )
-  assert.equal(asset.representation, 'full')
-  assert.equal(asset.requestedRepresentation, 'preview')
-  assert.equal(asset.fallbackReason, legacy.fallbackReason)
-  assert.deepEqual(
-    asset.downloadAttempts.map((a) => a.representation),
-    ['preview', 'full'],
-  )
-  assert.equal(first.checkpoint.media[0].representation, 'full')
-  assert.equal(first.checkpoint.media[0].requestedRepresentation, 'preview')
-  assert.equal(
-    first.checkpoint.pendingMedia[0].downloadAttempts[0].representation,
-    'preview',
-  )
-  assert.deepEqual([...first.files['media/asset.png']], [1, 2, 3])
-  assert.deepEqual(await db.get('media', 'asset'), stored)
-  assert.equal(
-    (await db.get('media', 'pending')).downloadAttempts[0].representation,
-    'native-preview',
-  )
-
-  // Simulate an older confirmed checkpoint while keeping the cached attachment.
-  const checkpoint = {
-    ...first.checkpoint,
-    media: first.checkpoint.media.map((m) => ({
-      ...m,
-      representation: 'full-fallback',
-      requestedRepresentation: 'native-preview',
-    })),
-  }
-  await db.importBackup(checkpoint)
+  await db.finalizeBackup(first.snapshot)
+  await db.put('meta', {
+    key: 'checkpoint',
+    value: {
+      ...first.checkpoint,
+      media: first.checkpoint.media.map((item) => ({ ...item, ...obsolete })),
+    },
+  })
   const delta = await prepare(db, account)
-  assert.equal(delta.checkpoint.media[0].representation, 'full')
-  assert.equal(delta.checkpoint.media[0].requestedRepresentation, 'preview')
-  assert.equal(delta.checkpoint.media[0].fallbackReason, legacy.fallbackReason)
+  for (const backup of [first, delta]) {
+    const attachments = JSON.parse(backup.files['attachments.json'])
+    assert.ok(
+      attachments.every((item) => !Object.hasOwn(item, 'obsoleteField')),
+    )
+    const [pending] = backup.checkpoint.pendingMedia
+    assert.deepEqual(pending.sources, [
+      { id: 'pending', messageId: 'alternate' },
+    ])
+    assert.deepEqual(pending.downloadAttempts, [
+      { operation: 'media', code: 'MEDIA_NOT_FOUND' },
+    ])
+    assert.equal(pending.obsoleteField, undefined)
+    assert.equal(backup.checkpoint.media[0].obsoleteField, undefined)
+  }
+  assert.deepEqual(first.files['media/asset.png'], Buffer.from([1, 2, 3]))
   assert.equal(delta.checkpoint.media[0].backupId, first.checkpoint.backupId)
-  assert.equal(delta.files['media/asset.png'], undefined)
-  assert.deepEqual(await db.get('media', 'asset'), stored)
-  assert.equal(
-    (await db.get('meta', 'checkpoint')).value.media[0].representation,
-    'full-fallback',
-  )
 })

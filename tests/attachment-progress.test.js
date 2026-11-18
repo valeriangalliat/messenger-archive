@@ -11,7 +11,6 @@ test('attachment timer shows waits without overwriting pause or completion', (t)
     id: 'complete-attachment-id',
     jid: '123@msgr',
     mediaKind: 'photo',
-    photoMode: 'preview',
   }
   const progress = attachmentProgress(
     { position: 2, queued: 10, saved: 5, total: 15, failed: 1 },
@@ -25,7 +24,7 @@ test('attachment timer shows waits without overwriting pause or completion', (t)
   )
   t.after(progress.stop)
   assert.match(status, /Attachment 2 of 10 this run.*5\/15 saved/)
-  assert.match(status, /Damien · Photo preview · Downloading/)
+  assert.match(status, /Damien · Photo · Downloading/)
   assert.ok(status.includes(job.id))
   t.mock.timers.tick(2000)
   assert.match(status, /2s on this attachment/)
@@ -43,11 +42,9 @@ test('attachment timer shows waits without overwriting pause or completion', (t)
 
   progress.update({
     operation: 'media',
-    job: { ...job, photoMode: 'full' },
-    fallback: true,
     attempt: 1,
   })
-  assert.match(status, /Full photo fallback · Downloading · attempt 1\/3/)
+  assert.match(status, /Photo · Downloading · attempt 1\/3/)
 
   paused = true
   status = 'Pausing after the current request…'

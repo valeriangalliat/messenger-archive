@@ -1,6 +1,6 @@
 /* Runs in Messenger's MAIN world. Only the explicitly listed read operations are exposed. */
 ;(() => {
-  if (globalThis.MessengerArchivePage?.version === 8) return
+  if (globalThis.MessengerArchivePage?.version === 9) return
   const C = globalThis.MessengerArchiveCore
   const modules = new Map(),
     buffers = new Map()
@@ -374,18 +374,13 @@
   }
   async function media(job) {
     const bridge = (await mod('MAWBridge')).getBridge()
-    const preview = job.mediaKind === 'photo' && job.photoMode !== 'full'
-    const metadata = preview ? C.photoMetadata(C.unpack(job.mediaEntry)) : {}
     // Uses the export media reader; its native code may refresh Meta's local CDN URL cache.
-    // PreviewsOnly (1) checks both native preview types and chooses full size
-    // when neither is supported. Keep not-found distinct from transient failures
-    // so the caller can try other previews before a full-photo fallback.
     const result = await bridge.sendAndReceive(
       'backend',
       'dyiDownloadMediaV2',
       {
         mediaEntry: C.unpack(job.mediaEntry),
-        mediaOption: preview ? 1 : 0,
+        mediaOption: 0,
         plaintextHash: job.expectedHash,
         protocolMsgId: job.protocolMsgId,
         sortOrderMs: job.timestamp,
@@ -399,7 +394,6 @@
             ? 'MEDIA_NOT_FOUND'
             : 'MEDIA_DOWNLOAD_FAILED',
         nativeCode,
-        previewAdvertised: metadata.previewAdvertised ?? null,
       })
     }
     const payload = result.value,
@@ -427,22 +421,8 @@
         normalized(hash) === normalized(C.bytesToBase64(digest))
       )
     }
-    const sourceVerified = matches(job.expectedHash)
-    const thumbnailVerified = metadata.thumbnailHash
-      ? matches(metadata.thumbnailHash)
-      : null
-    if (!preview && !sourceVerified)
+    if (!matches(job.expectedHash))
       throw Error('Attachment SHA-256 does not match its message metadata.')
-    if (
-      preview &&
-      !sourceVerified &&
-      metadata.thumbnailHash &&
-      !metadata.progressive &&
-      !thumbnailVerified
-    )
-      throw Error(
-        'Photo preview SHA-256 does not match its thumbnail metadata.',
-      )
     const token = crypto.randomUUID()
     buffers.set(token, { bytes, expires: Date.now() + 300000 })
     for (const [key, data] of buffers)
@@ -457,14 +437,6 @@
           'application/octet-stream',
       ),
       nativeMime: validated.mimeType || payload.unvalidatedMimeType || null,
-      representation: preview && !sourceVerified ? 'preview' : 'full',
-      requestedRepresentation: preview ? 'preview' : 'full',
-      verification: {
-        storedSha256: 'computed',
-        sourceHashVerified: sourceVerified,
-        thumbnailHashVerified: thumbnailVerified,
-        nativeSkipValidation: validated.skipValidation ?? null,
-      },
       sha256: hex,
     }
   }
@@ -549,7 +521,7 @@
     },
   }
   globalThis.MessengerArchivePage = Object.freeze({
-    version: 8,
+    version: 9,
     async call(action, args = {}, expectedAccount) {
       try {
         if (!Object.hasOwn(actions, action))
@@ -564,7 +536,6 @@
           error: String(e.message || e),
           code: e.code || null,
           nativeCode: e.nativeCode || null,
-          previewAdvertised: e.previewAdvertised ?? null,
         }
       }
     },

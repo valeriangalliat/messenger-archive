@@ -135,7 +135,7 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
   assert.equal($('export').disabled, true)
   for (const id of ['discover', 'recheck', 'repair', 'pause'])
     assert.equal(nodes.has(id), false)
-  assert.equal(nodes.has('fullPhotos'), true)
+  assert.equal(nodes.has('fullPhotos'), false)
 
   // Pause during a request, reconnect, and continue from its committed cursor.
   let releaseHistory
@@ -498,7 +498,6 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
   await db.discover([thread], { complete: true })
   await db.put('threads', { ...thread, status: 'reached-start' })
   await db.saveMedia({ id: 'already-saved', status: 'saved' })
-  await db.put('meta', { key: 'settings', fullPhotos: true })
   for (const id of ['a-photo', 'b-photo', 'c-photo'])
     await db.saveMedia({
       id,
@@ -516,7 +515,7 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
     if (action === 'media') {
       mediaCalls++
       assert.ok($('status').textContent.includes(values.id))
-      assert.match($('status').textContent, /A chat · Photo preview/)
+      assert.match($('status').textContent, /A chat · Photo/)
       if (values.id === 'a-photo') {
         assert.match($('status').textContent, /Attachment 1 of 3 this run/)
         if (mediaCalls === 1)
@@ -549,9 +548,6 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
     return [{ result: { ok: true, value } }]
   }
   await $('connect').onclick()
-  assert.equal($('fullPhotos').checked, true)
-  $('fullPhotos').checked = false
-  await $('fullPhotos').onchange()
   await $('start').onclick()
   assert.equal(mediaCalls, 3)
   assert.equal((await db.get('media', 'already-saved')).status, 'saved')
@@ -565,58 +561,38 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
   assert.equal((await db.get('media', 'c-photo')).status, 'pending')
   assert.equal($('status').textContent, 'Paused. Your progress is saved.')
 
-  // A not-found preview switches to full size without any retry sleeps.
+  // Missing full-size media stops immediately, without retry sleeps.
   await db.clearLocal()
   await db.discover([thread], { complete: true })
   await db.put('threads', { ...thread, status: 'reached-start' })
-  const mediaModes = []
+  let missingCalls = 0
   browser.scripting.executeScript = async (options) => {
-    const [action, values] = options.args || []
-    if (!['media', 'chunk', 'release', 'refreshMedia'].includes(action))
-      return executeScript(options)
-    assert.notEqual(action, 'refreshMedia')
-    let value
-    if (action === 'media') {
-      mediaModes.push(values.photoMode)
-      if (values.photoMode === 'preview')
-        return [
-          {
-            result: {
-              ok: false,
-              code: 'MEDIA_NOT_FOUND',
-              nativeCode: 'media-not-found',
-              previewAdvertised: true,
-              error: 'media-not-found',
-            },
-          },
-        ]
-      assert.match($('status').textContent, /Full photo fallback/)
-      assert.match($('status').textContent, /attempt 1\/3/)
-      value = {
-        token: 'fallback',
-        size: 3,
-        mime: 'image/jpeg',
-        representation: 'full',
-        requestedRepresentation: 'full',
-      }
-    } else value = action === 'chunk' ? 'AQID' : true
-    return [{ result: { ok: true, value } }]
+    const [action] = options.args || []
+    if (action !== 'media') return executeScript(options)
+    missingCalls++
+    return [
+      {
+        result: {
+          ok: false,
+          code: 'MEDIA_NOT_FOUND',
+          nativeCode: 'media-not-found',
+          error: 'media-not-found',
+        },
+      },
+    ]
   }
   await db.saveMedia({
-    id: 'fallback',
+    id: 'missing',
     jid: thread.jid,
     mediaKind: 'photo',
-    expectedHash: 'fallback',
+    expectedHash: 'missing',
     status: 'pending',
   })
   await $('connect').onclick()
   const sleeps = t.mock.method(globalThis, 'setTimeout')
   await $('start').onclick()
-  assert.deepEqual(mediaModes, ['preview', 'full'])
+  assert.equal(missingCalls, 1)
   assert.equal(sleeps.mock.calls.length, 0)
   sleeps.mock.restore()
-  const fallback = await db.get('media', 'fallback')
-  assert.equal(fallback.status, 'saved')
-  assert.equal(fallback.fallbackReason, 'preview-media-not-found')
-  assert.equal(fallback.requestedRepresentation, 'preview')
+  assert.equal((await db.get('media', 'missing')).status, 'error')
 })

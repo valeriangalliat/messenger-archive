@@ -1,5 +1,5 @@
 // Portable metadata only: media bytes remain in the baseline and delta ZIPs.
-import { normalizeAttachment } from './attachments.js'
+import { attachmentMetadata } from './attachments.js'
 
 export const checkpointFormat = 'messenger-archive-checkpoint/1'
 export const messageKey = (m) => JSON.stringify(m.key)
@@ -117,7 +117,7 @@ export async function makeCheckpoint(
   for (const m of included)
     messages.set(messageKey(m), { key: m.key, hash: m.hash, backupId })
   const assets = new Map(
-    (value?.media || []).map((m) => [m.id, normalizeAttachment(m)]),
+    (value?.media || []).map((m) => [m.id, attachmentMetadata(m)]),
   )
   for (const job of media)
     if (job.status === 'saved' && !mediaMatches(job, assets.get(job.id)))
@@ -128,10 +128,6 @@ export async function makeCheckpoint(
         mime: job.mime,
         nativeMime: job.nativeMime,
         sha256: job.sha256,
-        representation: job.representation,
-        requestedRepresentation: job.requestedRepresentation,
-        fallbackReason: job.fallbackReason,
-        verification: job.verification,
         status: 'exported',
         backupId,
         path: mediaPath(job),

@@ -1,18 +1,3 @@
-const representationFields = (record) => {
-  const result = { ...record }
-  for (const key of ['representation', 'requestedRepresentation']) {
-    if (result[key] === 'native-preview') result[key] = 'preview'
-    else if (result[key] === 'full-fallback') result[key] = 'full'
-  }
-  return result
-}
-// Normalize metadata at export; an active run can keep writing the old labels.
-export function normalizeAttachment(record) {
-  const result = representationFields(record)
-  if (Array.isArray(record.downloadAttempts))
-    result.downloadAttempts = record.downloadAttempts.map(representationFields)
-  return result
-}
 // Source metadata travels together: a forwarded copy can have a different author or chat.
 export function attachmentSource(job) {
   const {
@@ -36,6 +21,60 @@ export function attachmentSource(job) {
     mediaKind,
     mediaEntry,
     protocolMsgId,
+  }
+}
+// Only current attachment fields belong in portable metadata.
+export function attachmentMetadata(job) {
+  const {
+    sources,
+    status,
+    size,
+    mime,
+    nativeMime,
+    sha256,
+    localRevision,
+    savedAt,
+    backupId,
+    path,
+    error,
+    nativeCode,
+    downloadAttempts,
+  } = job
+  return {
+    ...attachmentSource(job),
+    sources: sources?.map(attachmentSource),
+    status,
+    size,
+    mime,
+    nativeMime,
+    sha256,
+    localRevision,
+    savedAt,
+    backupId,
+    path,
+    error,
+    nativeCode,
+    downloadAttempts: downloadAttempts?.map(
+      ({
+        at,
+        operation,
+        jid,
+        messageId,
+        timestamp,
+        error,
+        code,
+        nativeCode,
+      }) => ({
+        at,
+        operation,
+        jid,
+        messageId,
+        timestamp,
+        error,
+        code,
+        nativeCode,
+      }),
+    ),
   }
 }
 export const sourceKey = (job) =>

@@ -8,14 +8,7 @@ export function attachmentProgress(stats, job, names, say, paused) {
     const current = state.job,
       elapsed = Math.floor((Date.now() - started) / 1000),
       name = names.get(current.jid) || current.jid,
-      kind =
-        current.mediaKind === 'photo'
-          ? current.photoMode === 'full'
-            ? state.fallback
-              ? 'Full photo fallback'
-              : 'Full photo'
-            : 'Photo preview'
-          : 'Attachment',
+      kind = current.mediaKind === 'photo' ? 'Photo' : 'Attachment',
       stage =
         state.operation === 'waiting'
           ? `Retry in ${Math.max(0, Math.ceil((retryAt - Date.now()) / 1000))}s`

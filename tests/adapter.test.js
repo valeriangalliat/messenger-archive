@@ -183,7 +183,6 @@ async function setup() {
       throw Object.assign(Error(result.error), {
         code: result.code,
         nativeCode: result.nativeCode,
-        previewAdvertised: result.previewAdvertised,
       })
     return result.value
   }
@@ -465,88 +464,48 @@ test('dense timestamp groups expand the page instead of skipping IDs; oversized 
   )
 })
 
-test('native photo previews keep source identity separate, detect real MIME, and do not reduce videos', async () => {
+test('all media requests full size, detects MIME, and rejects bytes that do not match the original hash', async () => {
   const { rpc, modules, calls, digest, core } = await setup()
   const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2])
-  const pngHash = Buffer.from(await crypto.subtle.digest('SHA-256', png))
-  let responseBytes = png
+  const hash = Buffer.from(await crypto.subtle.digest('SHA-256', png))
   modules.MAWBridge.getBridge = () => ({
     sendAndReceive: async (...args) => {
       calls.push(['bridge', ...args])
       return {
         success: true,
         value: {
-          validatedResult: {
-            validatedPlaintext: responseBytes,
-            skipValidation: true,
-          },
+          validatedResult: { validatedPlaintext: png, skipValidation: true },
           unvalidatedMimeType: 'image/jpeg',
         },
       }
     },
   })
-  const job = {
-    expectedHash: digest,
-    mediaKind: 'photo',
-    mediaEntry: core.pack(new Uint8Array([1, 2])),
+  for (const mediaKind of ['photo', 'video', 'other']) {
+    const job = {
+      expectedHash: hash.toString('base64url'),
+      mediaKind,
+      mediaEntry: core.pack(new Uint8Array([1, 2])),
+    }
+    const result = await rpc('media', job)
+    assert.equal(calls.at(-1)[3].mediaOption, 0)
+    assert.equal(result.mime, 'image/png')
+    assert.equal(result.nativeMime, 'image/jpeg')
+    assert.equal(result.sha256, hash.toString('hex'))
+    assert.equal(core.filename('file', result.mime), 'file.png')
+    await rpc('release', { token: result.token })
+    await assert.rejects(
+      rpc('media', { ...job, expectedHash: digest }),
+      /does not match/,
+    )
   }
-  const preview = await rpc('media', job)
-  assert.equal(calls.at(-1)[3].mediaOption, 1)
-  assert.equal(preview.mime, 'image/png')
-  assert.equal(preview.nativeMime, 'image/jpeg')
-  assert.equal(preview.representation, 'preview')
-  assert.equal(preview.requestedRepresentation, 'preview')
-  assert.equal(preview.verification.sourceHashVerified, false)
-  assert.equal(preview.verification.nativeSkipValidation, true)
-  assert.equal(preview.sha256, pngHash.toString('hex'))
-  assert.equal(core.filename('photo', preview.mime), 'photo.png')
-  await rpc('release', { token: preview.token })
-
-  // A separate native thumbnail has its own known hash, protobuf field 12.1.
-  job.mediaEntry = core.pack(new Uint8Array([98, 34, 10, 32, ...pngHash]))
-  const thumbnail = await rpc('media', job)
-  assert.equal(thumbnail.verification.thumbnailHashVerified, true)
-  assert.equal(thumbnail.verification.sourceHashVerified, false)
-  responseBytes = new Uint8Array([255, 216, 255, 217])
-  await assert.rejects(rpc('media', job), /thumbnail metadata/)
-  // Progressive preview bytes are not asserted to match the full photo or thumbnail.
-  job.mediaEntry = core.pack(
-    new Uint8Array([98, 34, 10, 32, ...pngHash, 122, 0]),
-  )
-  const progressive = await rpc('media', job)
-  assert.equal(progressive.representation, 'preview')
-  assert.equal(progressive.verification.thumbnailHashVerified, false)
-  assert.equal(progressive.verification.sourceHashVerified, false)
-
-  responseBytes = png
-  job.expectedHash = pngHash.toString('base64url')
-  const fallback = await rpc('media', job)
-  assert.equal(fallback.representation, 'full')
-  assert.equal(fallback.requestedRepresentation, 'preview')
-  assert.equal(fallback.verification.sourceHashVerified, true)
-  const full = await rpc('media', { ...job, photoMode: 'full' })
-  assert.equal(calls.at(-1)[3].mediaOption, 0)
-  assert.equal(full.representation, 'full')
-  assert.equal(full.requestedRepresentation, 'full')
-  await assert.rejects(
-    rpc('media', { ...job, photoMode: 'full', expectedHash: digest }),
-    /does not match/,
-  )
-  await rpc('media', { ...job, mediaKind: 'video' })
-  assert.equal(calls.at(-1)[3].mediaOption, 0)
-  await assert.rejects(
-    rpc('media', { ...job, mediaKind: 'video', expectedHash: digest }),
-    /does not match/,
-  )
 })
 
-test('media helper distinguishes not-found from transient errors and reports advertised previews', async () => {
+test('media helper distinguishes missing media from retryable native errors', async () => {
   const { rpc, modules, calls, digest, core } = await setup()
   const job = {
     expectedHash: digest,
     mediaKind: 'photo',
-    photoMode: 'preview',
-    mediaEntry: core.pack(new Uint8Array([122, 0])),
+    mediaEntry: core.pack(new Uint8Array([1, 2])),
   }
   for (const nativeCode of [
     'media-not-found',
@@ -554,7 +513,7 @@ test('media helper distinguishes not-found from transient errors and reports adv
     'runtime-error',
     'signature-expired',
     'direct-path-undefined',
-    'unknown-preview-error',
+    'hash-mismatch',
   ]) {
     modules.MAWBridge.getBridge = () => ({
       sendAndReceive: async (...args) => {
@@ -569,35 +528,23 @@ test('media helper distinguishes not-found from transient errors and reports adv
         error.code ===
           (nativeCode === 'media-not-found'
             ? 'MEDIA_NOT_FOUND'
-            : 'MEDIA_DOWNLOAD_FAILED') &&
-        error.nativeCode === nativeCode &&
-        error.previewAdvertised === true,
+            : 'MEDIA_DOWNLOAD_FAILED') && error.nativeCode === nativeCode,
     )
     assert.equal(calls.length, before + 1)
-    assert.equal(calls.at(-1)[3].mediaOption, 1)
+    assert.equal(calls.at(-1)[3].mediaOption, 0)
   }
-  modules.MAWBridge.getBridge = () => ({
-    sendAndReceive: async (...args) => {
-      calls.push(['bridge', ...args])
-      throw Error('request timed out')
-    },
-  })
-  const before = calls.length
-  await assert.rejects(rpc('media', job), /request timed out/)
-  assert.equal(calls.length, before + 1)
-  assert.equal(calls.at(-1)[3].mediaOption, 1)
 })
 
-test('updated photo policy replaces the previous injected helper', async () => {
+test('full-size downloader replaces the previous injected helper', async () => {
   const { context, rpc } = await setup()
   context.MessengerArchivePage = {
-    version: 7,
+    version: 8,
     call: () => {
       throw Error('stale helper called')
     },
   }
   vm.runInContext(sources[1], context)
-  assert.equal(context.MessengerArchivePage.version, 8)
+  assert.equal(context.MessengerArchivePage.version, 9)
   assert.equal((await rpc('probe')).account, '999')
 })
 

@@ -112,57 +112,6 @@
     if (text.startsWith('RIFF') && text.slice(8) === 'WEBP') return 'image/webp'
     return fallback
   }
-  // The native photo metadata's thumbnail hash is field 12.1; progressive scans
-  // are field 15. Unknown/malformed metadata makes no integrity claim.
-  function photoMetadata(bytes) {
-    const fields = (data) => {
-      let at = 0
-      const result = new Map()
-      const integer = () => {
-        let n = 0n
-        for (let shift = 0n; shift < 70n; shift += 7n) {
-          if (at >= data.length) throw Error('Incomplete metadata')
-          const b = data[at++]
-          n |= BigInt(b & 127) << shift
-          if (b < 128) return Number(n)
-        }
-        throw Error('Invalid metadata integer')
-      }
-      while (at < data.length) {
-        const tag = integer(),
-          wire = tag & 7
-        let value
-        if (!tag) throw Error('Invalid metadata tag')
-        if (wire === 0) value = integer()
-        else {
-          const size =
-            wire === 2 ? integer() : wire === 1 ? 8 : wire === 5 ? 4 : -1
-          if (
-            size < 0 ||
-            !Number.isSafeInteger(size) ||
-            at + size > data.length
-          )
-            throw Error('Invalid metadata field')
-          value = data.subarray(at, at + size)
-          at += size
-        }
-        result.set(tag >>> 3, value)
-      }
-      return result
-    }
-    try {
-      if (!(bytes instanceof Uint8Array)) return {}
-      const data = fields(bytes),
-        hash = data.has(12) ? fields(data.get(12)).get(1) : null
-      return {
-        progressive: data.has(15),
-        previewAdvertised: data.has(12) || data.has(15),
-        thumbnailHash: hash?.length === 32 ? bytesToBase64(hash) : null,
-      }
-    } catch {
-      return {}
-    }
-  }
   function fieldIndexes(source, fields) {
     const args = source.match(
       /(?:var|let|const)\s+([\w$]+)\s*=\s*arguments\b/,
@@ -359,7 +308,6 @@
     inventoryCursor,
     filename,
     detectedMime,
-    photoMetadata,
     fieldIndexes,
     readSteps,
   })

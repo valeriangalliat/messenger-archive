@@ -56,128 +56,45 @@ const source = (name, chat = name) => ({
   mediaEntry: name,
   protocolMsgId: { author: name, chat, externalId: name },
 })
-const notFound = (previewAdvertised = true) =>
+const notFound = () =>
   Object.assign(Error('Attachment download failed: media-not-found'), {
     code: 'MEDIA_NOT_FOUND',
     nativeCode: 'media-not-found',
-    previewAdvertised,
   })
-test('all preview sources are tried once before an immediate verified full-photo fallback', async () => {
-  const job = {
-    ...source('original'),
-    mediaKind: 'photo',
-    photoMode: 'preview',
-    sources: [{ ...source('alternate'), mediaKind: 'photo' }],
-  }
-  const calls = [],
-    events = []
-  const result = await retryAttachment(
-    job,
-    async (action, value) => {
-      assert.equal(action, 'media')
-      calls.push([value.messageId, value.photoMode])
-      if (value.photoMode === 'preview') throw notFound()
-      return {
-        token: 'verified',
-        representation: 'full',
-        requestedRepresentation: 'full',
-      }
-    },
-    retry,
-    undefined,
-    (event) => events.push(event),
-  )
-  assert.deepEqual(calls, [
-    ['alternate', 'preview'],
-    ['original', 'preview'],
-    ['alternate', 'full'],
-  ])
-  assert.equal(result.result.representation, 'full')
-  assert.equal(result.result.requestedRepresentation, 'preview')
-  assert.equal(result.result.fallbackReason, 'preview-media-not-found')
-  assert.deepEqual(
-    result.job.downloadAttempts.map((a) => a.representation),
-    ['preview', 'preview', 'full'],
-  )
-  assert.ok(events.at(-1).fallback)
-  assert.equal(events.at(-1).attempt, 1)
-})
-test('a working alternate preview prevents a full-photo request', async () => {
+test('missing sources are tried once before using another source', async () => {
   const calls = []
   const result = await retryAttachment(
-    {
-      ...source('working'),
-      mediaKind: 'photo',
-      photoMode: 'preview',
-      sources: [{ ...source('missing'), mediaKind: 'photo' }],
-    },
+    { ...source('working'), sources: [source('missing')] },
     async (action, job) => {
       assert.equal(action, 'media')
-      assert.equal(job.photoMode, 'preview')
       calls.push(job.messageId)
       if (job.messageId === 'missing') throw notFound()
-      return { token: 'preview' }
+      return { token: 'verified' }
     },
     retry,
   )
   assert.deepEqual(calls, ['missing', 'working'])
-  assert.equal(result.result.token, 'preview')
+  assert.equal(result.result.token, 'verified')
 })
-test('not-found full photos are not repeated; transient or unknown previews never escalate', async () => {
-  for (const [mode, advertised, failure, expected] of [
-    ['full', null, () => notFound(), ['full']],
-    ['preview', true, () => notFound(), ['preview', 'full']],
-    ['preview', false, () => notFound(false), ['preview']],
-    ['preview', null, () => notFound(null), ['preview']],
-    [
-      'preview',
-      true,
-      () => Error('request timed out'),
-      ['preview', 'preview', 'preview'],
-    ],
+test('not-found requests stop immediately while transient errors retry', async () => {
+  for (const [failure, expected] of [
+    [notFound, 1],
+    [() => Error('request timed out'), 3],
   ]) {
-    const calls = []
+    let calls = 0
     await assert.rejects(
       retryAttachment(
-        {
-          ...source('original'),
-          mediaKind: 'photo',
-          photoMode: mode,
-        },
+        source('original'),
         async (action, job) => {
           if (action === 'refreshMedia') return job
-          calls.push(job.photoMode)
-          const error = failure()
-          error.previewAdvertised = advertised
-          throw error
+          calls++
+          throw failure()
         },
         retry,
       ),
     )
-    assert.deepEqual(calls, expected)
+    assert.equal(calls, expected)
   }
-})
-test('an unknown failure in another preview source blocks full-photo escalation', async () => {
-  const calls = []
-  await assert.rejects(
-    retryAttachment(
-      {
-        ...source('unknown'),
-        mediaKind: 'photo',
-        photoMode: 'preview',
-        sources: [{ ...source('missing'), mediaKind: 'photo' }],
-      },
-      async (action, job) => {
-        if (action === 'refreshMedia') return job
-        calls.push(job.photoMode)
-        if (job.messageId === 'missing') throw notFound()
-        throw Error('runtime error')
-      },
-      retry,
-    ),
-    /runtime error/,
-  )
-  assert.deepEqual(calls, ['preview', 'preview', 'preview', 'preview'])
 })
 test('every alternate and the original are reachable with their own source metadata', async () => {
   const original = source('working'),

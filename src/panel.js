@@ -40,7 +40,6 @@ const enabled = () => {
     'importBackup',
     'cleanup',
     'clearLocal',
-    'fullPhotos',
     'autoCleanup',
     'retainMessages',
   ])
@@ -104,7 +103,6 @@ async function rpc(action, args = {}) {
     throw Object.assign(Error(result.error), {
       code: result.code,
       nativeCode: result.nativeCode,
-      previewAdvertised: result.previewAdvertised,
     })
   }
   return result.value
@@ -407,7 +405,6 @@ async function fetchMedia() {
   for await (let job of archive.rows('media')) {
     if (paused) break
     if (['saved', 'exported'].includes(job.status)) continue
-    job = { ...job, photoMode: $('fullPhotos').checked ? 'full' : 'preview' }
     stats.position++
     const progress = attachmentProgress(stats, job, names, say, () => paused)
     let token
@@ -624,7 +621,6 @@ async function connect(preferredTab) {
     progress('Opening saved archive…')
     archive = await openArchive(account, progress)
     const settings = await archive.get('meta', 'settings')
-    $('fullPhotos').checked = settings?.fullPhotos || false
     $('autoCleanup').checked = settings?.autoCleanup || false
     $('retainMessages').checked = settings?.retainMessages !== false
     await navigator.locks.request(
@@ -693,12 +689,11 @@ $('clearLocal').onclick = () =>
       'All local archive data deleted. Import a backup or start a new archive.',
     )
   })
-for (const id of ['fullPhotos', 'autoCleanup', 'retainMessages'])
+for (const id of ['autoCleanup', 'retainMessages'])
   $(id).onchange = () =>
     work(() =>
       archive.put('meta', {
         key: 'settings',
-        fullPhotos: !!$('fullPhotos').checked,
         autoCleanup: !!$('autoCleanup').checked,
         retainMessages: !!$('retainMessages').checked,
       }),
