@@ -212,6 +212,115 @@ test('server discovery submits ONLY task 760 and never runs returned DB procedur
   assert.equal(task.queue_name, 'fts_thread_fetch')
   assert.match(task.payload, /"timestamp":9223372036854775807/)
 })
+
+function contactRow() {
+  // biome-ignore lint/complexity/noArguments: Inspect the real response procedure's argument layout.
+  var e = arguments
+  throw Error('contact database procedure was executed')
+  // biome-ignore lint/correctness/noUnreachable: The definition is data; it must never run.
+  return t.db.table(7).put({ id: e[0], name: e[9] })
+}
+const contactResponse = (taskId, rows) => ({
+  dependencies: [],
+  payload: JSON.stringify({
+    step: [
+      1,
+      [4, 0, 1, [5, 'taskExists', [19, String(taskId)]]],
+      [
+        23,
+        [2, 0],
+        [
+          1,
+          ...rows.map(([id, name]) => [
+            5,
+            'deleteThenInsertContact',
+            [19, id],
+            ...Array(8).fill(null),
+            name,
+          ]),
+        ],
+      ],
+      [5, 'removeTask', [19, String(taskId)], [9]],
+    ],
+  }),
+})
+
+test('missing contact names use only task 207 and inspect contact procedures without executing them', async () => {
+  const { rpc, modules } = await setup()
+  const expected = {
+    100006568124597: 'Cynthia Amrein',
+    699399875: 'Sam Roelants',
+  }
+  const sent = []
+  modules.LSDynamicDependencies.cachedModules.deleteThenInsertContact = {
+    load: async () => contactRow,
+  }
+  modules.LSPlatformGraphQLLightspeedRequest = async (
+    device,
+    requestId,
+    payload,
+    type,
+    options,
+  ) => {
+    assert.equal(device, 'existing-device')
+    assert.equal(type, 3)
+    assert.equal(options.fetchPolicy, 'network-only')
+    const tasks = JSON.parse(payload).tasks
+    assert.equal(tasks.length, 1)
+    const [task] = tasks
+    assert.equal(task.label, '207')
+    assert.equal(task.queue_name, 'cpq_v2')
+    const id = String(JSON.parse(task.payload).contact_id)
+    sent.push(id)
+    return contactResponse(requestId, [[id, expected[id]]])
+  }
+  for (const [id, name] of Object.entries(expected))
+    assert.equal(await rpc('contactName', { id }), name)
+  assert.deepEqual(sent, Object.keys(expected))
+})
+
+test('contact lookups reject invalid IDs before requesting and reject ambiguous or malformed names', async () => {
+  const { rpc, calls, modules } = await setup()
+  for (const id of [
+    '',
+    '0',
+    '1e5',
+    '123,"extra":1',
+    '9223372036854775808',
+    123,
+    {},
+  ])
+    await assert.rejects(
+      rpc('contactName', { id }),
+      /Invalid contact identifier/,
+    )
+  await assert.rejects(
+    rpc('contactName', { id: '123' }, 'another-account'),
+    /account changed/,
+  )
+  assert.equal(calls.length, 0)
+  modules.LSDynamicDependencies.cachedModules.deleteThenInsertContact =
+    contactRow
+  let rows = []
+  modules.LSPlatformGraphQLLightspeedRequest = async (_device, id) =>
+    contactResponse(id, rows)
+  assert.equal(await rpc('contactName', { id: '123' }), null)
+  rows = [['456', 'Someone else']]
+  assert.equal(await rpc('contactName', { id: '123' }), null)
+  rows = [['123', 42]]
+  await assert.rejects(
+    rpc('contactName', { id: '123' }),
+    /Invalid contact name/,
+  )
+  rows = [
+    ['123', 'First'],
+    ['123', 'Second'],
+  ]
+  await assert.rejects(
+    rpc('contactName', { id: '123' }),
+    /Ambiguous contact names/,
+  )
+})
 test('account changes and unsupported operations issue no requests', async () => {
   const { rpc, calls } = await setup()
   await assert.rejects(rpc('history', {}, 'another-account'), /account changed/)
@@ -330,6 +439,19 @@ test('local inventory joins serverThreadKey to the encrypted jid, not clientThre
   assert.equal(inventory.threads[0].jid, '123@msgr')
   assert.equal(inventory.threads[0].id, '123')
   assert.equal(inventory.threads[0].encrypted, true)
+  assert.equal(inventory.names['123'], 'Mapped contact')
+  modules.LSDatabaseSingleton.LSDatabaseSingleton = Promise.resolve({
+    tables: {
+      threads: [
+        { threadKey: '123', threadType: '15', threadName: 'Known title' },
+      ],
+      mi_act_mapping_table: [],
+      contacts: [],
+      messenger_fts_threads: [],
+    },
+  })
+  const titled = await rpc('localInventory')
+  assert.equal(titled.names['123'], 'Known title')
 })
 
 test('saved admin and Raven action records re-decode locally without chat or media requests', async () => {
@@ -538,13 +660,13 @@ test('media helper distinguishes missing media from retryable native errors', as
 test('full-size downloader replaces the previous injected helper', async () => {
   const { context, rpc } = await setup()
   context.MessengerArchivePage = {
-    version: 8,
+    version: 9,
     call: () => {
       throw Error('stale helper called')
     },
   }
   vm.runInContext(sources[1], context)
-  assert.equal(context.MessengerArchivePage.version, 9)
+  assert.equal(context.MessengerArchivePage.version, 10)
   assert.equal((await rpc('probe')).account, '999')
 })
 

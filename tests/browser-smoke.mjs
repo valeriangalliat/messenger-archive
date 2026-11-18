@@ -80,6 +80,13 @@ try {
         .table(332)
         .put({ hasNextPage: e[2], nextPageCursor: e[3], resultCount: e[4] })
     }
+    function contact() {
+      // biome-ignore lint/complexity/noArguments: Inspect the contact response argument layout.
+      var e = arguments
+      throw Error('Contact DB write called')
+      // biome-ignore lint/correctness/noUnreachable: The response procedure must never run.
+      return t.db.table(7).put({ id: e[0], name: e[9] })
+    }
     const make = (id, timestamp, threadId) => ({
       toplevelProtobuf: {
         messageId: id,
@@ -132,19 +139,37 @@ try {
           payload,
           type,
         ) => {
-          if (window.__failDiscovery) throw Error('fixture discovery failure')
-          window.__calls.push([
-            'list',
-            JSON.parse(payload).tasks.map((t) => t.label),
-            type,
-          ])
-          const p = JSON.parse(JSON.parse(payload).tasks[0].payload),
-            first = p.timestamp > 50
+          const tasks = JSON.parse(payload).tasks
+          const p = JSON.parse(tasks[0].payload)
           const guard = (step) => [
             1,
             [4, 0, 1, [5, 'taskExists', [19, String(id)]]],
             [23, [2, 0], [1, step]],
           ]
+          if (tasks[0].label === '207') {
+            if (
+              tasks.length !== 1 ||
+              tasks[0].queue_name !== 'cpq_v2' ||
+              String(p.contact_id) !== '699399875'
+            )
+              throw Error('Unexpected contact request')
+            window.__calls.push(['contact', String(p.contact_id)])
+            return {
+              payload: JSON.stringify({
+                step: guard([
+                  5,
+                  'contact',
+                  [19, String(p.contact_id)],
+                  ...Array(8).fill(null),
+                  'Sam Roelants',
+                ]),
+              }),
+              dependencies: [],
+            }
+          }
+          if (window.__failDiscovery) throw Error('fixture discovery failure')
+          window.__calls.push(['list', tasks.map((t) => t.label), type])
+          const first = p.timestamp > 50
           return {
             payload: JSON.stringify({
               step: [
@@ -177,7 +202,7 @@ try {
         },
         LSDynamicDependencies: {
           downloadRelayDependencies: async () => {},
-          cachedModules: { row, query },
+          cachedModules: { row, query, contact },
         },
         MpsOverBridge: {
           mps: () => ({
@@ -510,6 +535,50 @@ try {
   assert.equal(
     await messenger.evaluate('window.__calls.length'),
     beforeExportCalls,
+  )
+  console.log('Testing missing contact lookup and a name-only delta ZIP…')
+  await panel.evaluate(async () => {
+    const { openArchive } = await import('../src/db.js')
+    const db = await openArchive('999')
+    await db.discover([
+      {
+        id: '699399875',
+        jid: '699399875@msgr',
+        name: '699399875',
+        encrypted: true,
+      },
+    ])
+    const thread = await db.get('threads', '699399875@msgr')
+    await db.put('threads', {
+      ...thread,
+      status: 'reached-start',
+      nameError: 'Name not resolved yet',
+    })
+    await db.put('meta', { key: 'run', complete: false })
+    db.db.close()
+  })
+  const beforeNames = await messenger.evaluate('window.__calls.length')
+  await panel.evaluate(`document.getElementById('start').onclick()`)
+  assert.deepEqual(
+    (await messenger.evaluate('window.__calls')).slice(beforeNames),
+    [['contact', '699399875']],
+  )
+  assert.match(
+    await panel.$eval('#threads', (el) => el.textContent),
+    /Sam Roelants/,
+  )
+  await panel.evaluate(`document.getElementById('export').onclick()`)
+  const [deltaName] = (await readdir(downloadsPath)).filter(
+    (name) => name !== downloads[0],
+  )
+  assert.ok(deltaName)
+  const delta = await readZip(await readFile(join(downloadsPath, deltaName)))
+  assert.equal(JSON.parse(delta['manifest.json']).messages, 0)
+  assert.equal(JSON.parse(delta['manifest.json']).attachmentsSaved, 0)
+  assert.equal(JSON.parse(delta['contacts.json'])['699399875'], 'Sam Roelants')
+  assert.equal(
+    JSON.parse(delta['checkpoint.json']).names['699399875'],
+    'Sam Roelants',
   )
   console.log('Testing every issue is accessible across pages…')
   await panel.evaluate(async () => {

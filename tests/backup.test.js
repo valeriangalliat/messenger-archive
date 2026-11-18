@@ -73,6 +73,34 @@ const recordsIn = (files) =>
       bytes.toString().split('\n').filter(Boolean).map(JSON.parse),
     )
 
+test('name corrections travel in delta metadata and restore without re-exporting messages or media', async (t) => {
+  const { db, account } = await create(t)
+  await baseline(db)
+  await db.put('meta', { key: 'names', value: { 123: '123' } })
+  const first = await prepare(db, account)
+  await db.finalizeBackup(first.snapshot)
+  await db.put('meta', { key: 'names', value: { 123: 'Cynthia Amrein' } })
+  await db.put('threads', {
+    ...(await db.get('threads', thread.jid)),
+    name: 'Cynthia Amrein',
+  })
+  const delta = await prepare(db, account)
+  assert.equal(delta.manifest.messages, 0)
+  assert.equal(delta.manifest.attachmentsSaved, 0)
+  assert.deepEqual(JSON.parse(delta.files['contacts.json']), {
+    123: 'Cynthia Amrein',
+  })
+  assert.equal(delta.checkpoint.names['123'], 'Cynthia Amrein')
+  await db.clearLocal()
+  await db.importBackup(delta.checkpoint)
+  assert.equal((await db.get('meta', 'names')).value['123'], 'Cynthia Amrein')
+  assert.equal((await db.get('threads', thread.jid)).name, 'Cynthia Amrein')
+  await assert.rejects(
+    db.importBackup({ ...delta.checkpoint, names: { 123: 42 } }),
+    /Invalid contact names/,
+  )
+})
+
 test('delta ZIPs use verified boundaries, consume equal timestamp groups, and reference earlier media across migration', async (t) => {
   const { db, account } = await create(t)
   await baseline(db)

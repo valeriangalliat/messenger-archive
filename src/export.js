@@ -46,15 +46,23 @@ export async function archiveZip(
     archive.count('messages'),
     archive.all('mediaIssues'),
   ])
-  const previous = await archive.get('meta', 'checkpoint')
+  const previous = (await archive.get('meta', 'checkpoint'))?.value
   const known = new Map(
-    (previous?.value.messages || []).map((m) => [messageKey(m), m]),
+    (previous?.messages || []).map((m) => [messageKey(m), m]),
   )
-  const assets = new Map((previous?.value.media || []).map((m) => [m.id, m]))
+  const assets = new Map((previous?.media || []).map((m) => [m.id, m]))
   const backupId = crypto.randomUUID()
   const included = []
   const messageSnapshot = []
-  const names = contacts?.value || {}
+  const names = { ...previous?.names, ...contacts?.value }
+  for (const t of threads)
+    if (
+      t.jid === `${t.id}@msgr` &&
+      t.name &&
+      t.name !== t.id &&
+      (!names[t.id] || names[t.id] === t.id)
+    )
+      names[t.id] = t.name
   let messages = 0
   const json = (path, value) =>
     zip.add(path, new Blob([JSON.stringify(value, null, 2)]), true)
@@ -107,6 +115,7 @@ export async function archiveZip(
       'Message count changed or conversation records are missing. Retry export.',
     )
   await json('threads.json', threads)
+  await json('contacts.json', names)
   const saved = media.filter(
     (job) => job.status === 'saved' && !mediaMatches(job, assets.get(job.id)),
   )
@@ -124,7 +133,8 @@ export async function archiveZip(
     included,
     threads,
     media,
-    previous?.value,
+    previous,
+    names,
   )
   await json('checkpoint.json', checkpoint)
   const references = new Map(checkpoint.media.map((m) => [m.id, m]))
@@ -161,6 +171,9 @@ export async function archiveZip(
     historyFailures: threads
       .filter((t) => t.error)
       .map((t) => ({ jid: t.jid, error: t.error })),
+    contactNameFailures: threads
+      .filter((t) => t.nameError)
+      .map((t) => ({ jid: t.jid, error: t.nameError })),
     decodeIssues: threads
       .filter((t) => t.decodeErrors)
       .map((t) => ({ jid: t.jid, count: t.decodeErrors })),
@@ -177,7 +190,7 @@ export async function archiveZip(
   // Caller holds the account lock through download completion and finalization.
   // Record revisions bind cleanup to the bytes and messages packed in this ZIP.
   const snapshot = {
-    parentId: previous?.value.backupId || null,
+    parentId: previous?.backupId || null,
     checkpoint,
     messages: messageSnapshot,
     media: media

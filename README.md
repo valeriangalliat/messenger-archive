@@ -19,6 +19,8 @@ Keep Messenger and the archive tab open while collecting data. You can pause and
 
 All attachments download at full size. The extension checks each file's SHA-256 against its message metadata before saving it. Missing files try other known sources; transient failures retry and refresh download metadata.
 
+Encrypted direct chats with missing names use a server contact lookup. The extension reads the response without applying Messenger database procedures. Names travel in `contacts.json` and the portable checkpoint; failed lookups appear in Issues and retry on the next run.
+
 ## Keep your backups
 
 Each ZIP contains new or changed messages and attachment bytes, plus a portable checkpoint. **Keep the baseline and every delta ZIP.** Import the latest ZIP or its checkpoint with the same Messenger account to resume on another laptop or after losing browser storage. The full archive still requires the earlier ZIPs; browsing and merging tools are not included.

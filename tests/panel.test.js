@@ -81,10 +81,10 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
             value = { account, missing: [] }
             break
           case 'localInventory':
-            value = { threads: [thread], names: {} }
+            value = { threads: [{ ...thread }], names: {} }
             break
           case 'listPage':
-            value = { threads: [thread], cursor: '0', hasMore: false }
+            value = { threads: [{ ...thread }], cursor: '0', hasMore: false }
             break
           case 'history': {
             enteredHistory?.()
@@ -136,6 +136,10 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
   for (const id of ['discover', 'recheck', 'repair', 'pause'])
     assert.equal(nodes.has(id), false)
   assert.equal(nodes.has('fullPhotos'), false)
+  await db.put('meta', {
+    key: 'names',
+    value: { 123: 'Previously known contact' },
+  })
 
   // Pause during a request, reconnect, and continue from its committed cursor.
   let releaseHistory
@@ -147,6 +151,10 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
   })
   const run = $('start').onclick()
   await entered
+  assert.equal(
+    (await db.get('meta', 'names')).value['123'],
+    'Previously known contact',
+  )
   assert.equal($('start').textContent, 'Pause')
   $('start').onclick()
   assert.equal($('start').textContent, 'Pausing…')
@@ -595,4 +603,78 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
   assert.equal(sleeps.mock.calls.length, 0)
   sleeps.mock.restore()
   assert.equal((await db.get('media', 'missing')).status, 'error')
+
+  // A resumed archive resolves server-only names without redoing completed history.
+  // A name lookup failure must remain visible without preventing media downloads.
+  await db.clearLocal()
+  const people = ['100006568124597', '699399875'].map((id) => ({
+    id,
+    jid: `${id}@msgr`,
+    name: id,
+    encrypted: true,
+    source: 'server',
+  }))
+  const group = { id: '789', jid: '789@g.us', name: '789', encrypted: true }
+  await db.discover([...people, group], { complete: true })
+  await db.put('meta', {
+    key: 'names',
+    value: { [people[0].id]: people[0].id },
+  })
+  for (const person of [...people, group])
+    await db.put('threads', { ...person, status: 'reached-start' })
+  await db.saveMessage({
+    key: [people[0].jid, 'hello'],
+    jid: people[0].jid,
+    id: 'hello',
+    senderId: people[0].id,
+    text: 'hello',
+  })
+  await db.saveMedia({
+    id: 'photo-after-names',
+    jid: people[0].jid,
+    status: 'pending',
+  })
+  const lookups = []
+  let failSam = true
+  browser.scripting.executeScript = async (options) => {
+    const [action, values] = options.args || []
+    if (!['contactName', 'media', 'chunk', 'release'].includes(action))
+      return executeScript(options)
+    let value
+    if (action === 'contactName') {
+      lookups.push(values.id)
+      if (values.id === people[1].id && failSam)
+        return [
+          { result: { ok: false, error: 'temporary contact lookup failure' } },
+        ]
+      value = values.id === people[0].id ? 'Cynthia Amrein' : 'Sam Roelants'
+    } else if (action === 'media')
+      value = { token: 'photo', size: 3, mime: 'image/jpeg' }
+    else value = action === 'chunk' ? 'AQID' : true
+    return [{ result: { ok: true, value } }]
+  }
+  await $('connect').onclick()
+  await $('start').onclick()
+  assert.deepEqual(
+    lookups,
+    people.map((p) => p.id),
+  )
+  assert.equal((await db.get('threads', people[0].jid)).name, 'Cynthia Amrein')
+  assert.match(
+    (await db.get('threads', people[1].jid)).nameError,
+    /temporary contact lookup failure/,
+  )
+  assert.equal((await db.get('media', 'photo-after-names')).status, 'saved')
+  assert.match($('counts').textContent, /1 contact name unresolved/)
+  assert.equal($('failureDetails').hidden, false)
+  failSam = false
+  await db.put('meta', { key: 'run', complete: false })
+  await $('start').onclick()
+  assert.deepEqual(lookups, [people[0].id, people[1].id, people[1].id])
+  assert.equal(
+    (await db.get('meta', 'names')).value[people[1].id],
+    'Sam Roelants',
+  )
+  assert.equal((await db.get('threads', people[1].jid)).nameError, null)
+  assert.equal($('failureDetails').hidden, true)
 })

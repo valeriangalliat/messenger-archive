@@ -37,6 +37,10 @@ export function backupState({
           if (parent.result) tx.abort()
         }
         saveCheckpoint(tx.objectStore('meta'), checkpoint)
+        updateRecord(tx.objectStore('meta'), 'names', (old) => ({
+          key: 'names',
+          value: { ...checkpoint.names, ...old?.value },
+        }))
         tx.objectStore('meta').put({
           key: 'inventory',
           ...checkpoint.inventory,

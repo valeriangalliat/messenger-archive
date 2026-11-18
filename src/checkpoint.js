@@ -46,6 +46,13 @@ export function validateCheckpoint(value, account) {
     throw Error('Unsupported or incomplete portable checkpoint.')
   if (String(value.account) !== String(account))
     throw Error('Backup belongs to a different Messenger account.')
+  if (
+    value.names != null &&
+    (typeof value.names !== 'object' ||
+      Array.isArray(value.names) ||
+      Object.values(value.names).some((name) => typeof name !== 'string'))
+  )
+    throw Error('Invalid contact names in checkpoint.')
   const backups = new Set([
     ...value.dependencies.map((d) => d.backupId),
     value.backupId,
@@ -110,6 +117,7 @@ export async function makeCheckpoint(
   threads,
   media,
   value,
+  names,
 ) {
   const messages = new Map(
     (value?.messages || []).map((m) => [messageKey(m), m]),
@@ -147,6 +155,7 @@ export async function makeCheckpoint(
         ]
       : [],
     createdAt: new Date().toISOString(),
+    names,
     coverageScope:
       'Encrypted conversations only; boundaries describe fetched message history, with decode and media failures listed separately.',
     gaps: threads

@@ -1,6 +1,6 @@
 /* Runs in Messenger's MAIN world. Only the explicitly listed read operations are exposed. */
 ;(() => {
-  if (globalThis.MessengerArchivePage?.version === 9) return
+  if (globalThis.MessengerArchivePage?.version === 10) return
   const C = globalThis.MessengerArchiveCore
   const modules = new Map(),
     buffers = new Map()
@@ -64,7 +64,9 @@
       ].map(read),
     )
     const names = Object.fromEntries(
-      contacts.filter((c) => c.name).map((c) => [num(i64, c.id), c.name]),
+      contacts
+        .map((c) => [num(i64, c.id), c.name])
+        .filter(([id, name]) => name && name !== id),
     )
     const mapped = new Map(
       mappings.map((m) => [num(i64, m.serverThreadKey), num(i64, m.jid)]),
@@ -78,6 +80,8 @@
       const encrypted = types.isArmadilloSecure(t.threadType)
       const group = types.isGroup(t.threadType)
       const jid = jids.convertIntJidToChatJid(i64.of_string(id), group)
+      if (!group && t.threadName && t.threadName !== id && !names[id])
+        names[id] = t.threadName
       result.set(jid, {
         jid,
         id,
@@ -103,42 +107,83 @@
     }
     return { threads: [...result.values()], names }
   }
-  async function listPage(cursor) {
-    if (!/^\d{1,19}$/.test(cursor) || BigInt(cursor) > 9223372036854775807n)
-      throw Error('Invalid conversation-list cursor.')
+  // Only the fixed read operations below can submit tasks.
+  async function readTask(label, queueName, taskPayload) {
     const request = await mod('LSPlatformGraphQLLightspeedRequest')
     const device = await mod('LSPlatformDeviceId'),
       version = await mod('LSVersion')
     const id = (await mod('LSPlatformRequestId')).generate()
-    // Task 760 fetches FTS conversation IDs. No generic task submission entry point exists.
     const task = {
-      label: '760',
-      queue_name: 'fts_thread_fetch',
+      label,
+      queue_name: queueName,
       task_id: id,
       failure_count: null,
-      payload: `{"timestamp":${cursor},"session_id":"","client_caller_id":"msgr_search_web_fts_threads_fetch"}`,
+      payload: taskPayload,
     }
     const payload = `{"epoch_id":${BigInt(Date.now()) << 22n},"tasks":${JSON.stringify([task])},"version_id":${JSON.stringify(version)}}`
     const response = await request(device.deviceId, id, payload, 3, {
       fetchPolicy: 'network-only',
     })
-    if (!response?.payload) throw Error('Empty conversation-list response.')
+    if (!response?.payload) throw Error('Empty Messenger lookup response.')
     const body = JSON.parse(response.payload),
       calls = C.readSteps(body.step, id)
     const dynamic = await mod('LSDynamicDependencies')
     // Load definitions to READ their field layouts. Never call any returned procedure.
     await dynamic.downloadRelayDependencies(response.dependencies || [])
+    return { calls, dynamic }
+  }
+  async function procedureSource(dynamic, name) {
+    let proc = dynamic.cachedModules[name]
+    if (proc?.load) proc = await proc.load()
+    proc = unwrap(proc)
+    return typeof proc === 'function'
+      ? Function.prototype.toString.call(proc)
+      : ''
+  }
+  async function contactName(id) {
+    if (
+      typeof id !== 'string' ||
+      !/^[1-9]\d{0,18}$/.test(id) ||
+      BigInt(id) > 9223372036854775807n
+    )
+      throw Error('Invalid contact identifier.')
+    // LSRefetchContactRowIfExists uses this contact lookup, but its local-row
+    // guard would skip the server-only contacts whose names we need.
+    const { calls, dynamic } = await readTask(
+      '207',
+      'cpq_v2',
+      `{"contact_id":${id}}`,
+    )
+    const names = new Set()
+    for (const call of calls) {
+      const source = await procedureSource(dynamic, call.name)
+      if (!/\.table\(7\)/.test(source) || !/\bname\s*:/.test(source)) continue
+      const fields = C.fieldIndexes(source, ['id', 'name'])
+      if (String(call.args[fields.id]) !== id) continue
+      const name = call.args[fields.name]
+      if (typeof name !== 'string')
+        throw Error('Invalid contact name in lookup response.')
+      if (name.trim()) names.add(name.trim())
+    }
+    if (names.size > 1)
+      throw Error('Ambiguous contact names in lookup response.')
+    return names.values().next().value || null
+  }
+  async function listPage(cursor) {
+    if (!/^\d{1,19}$/.test(cursor) || BigInt(cursor) > 9223372036854775807n)
+      throw Error('Invalid conversation-list cursor.')
+    const { calls, dynamic } = await readTask(
+      '760',
+      'fts_thread_fetch',
+      `{"timestamp":${cursor},"session_id":"","client_caller_id":"msgr_search_web_fts_threads_fetch"}`,
+    )
     let page
     const threads = [],
       types = await mod('LSMessagingThreadTypeUtil'),
       i64 = await mod('I64'),
       jids = await mod('MAWJids')
     for (const call of calls) {
-      let proc = dynamic.cachedModules[call.name]
-      if (proc?.load) proc = await proc.load()
-      proc = unwrap(proc)
-      if (typeof proc !== 'function') continue
-      const source = Function.prototype.toString.call(proc)
+      const source = await procedureSource(dynamic, call.name)
       if (/\.table\(331\)/.test(source) && /threadId\s*:/.test(source)) {
         const fields = C.fieldIndexes(source, ['threadId', 'threadType'])
         const id = String(call.args[fields.threadId]),
@@ -479,6 +524,7 @@
       return decodeMessages(messages, jid)
     },
     localInventory,
+    contactName: (args) => contactName(args.id),
     listPage: (args) => listPage(args.cursor),
     history: (args) => history(args.jid, args.cursor, args.batchSize),
     media,
@@ -521,7 +567,7 @@
     },
   }
   globalThis.MessengerArchivePage = Object.freeze({
-    version: 9,
+    version: 10,
     async call(action, args = {}, expectedAccount) {
       try {
         if (!Object.hasOwn(actions, action))

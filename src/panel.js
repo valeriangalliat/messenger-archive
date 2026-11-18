@@ -127,7 +127,8 @@ async function refresh(forceStorage = false) {
   const errors = threads.filter((t) => t.status === 'error').length
   const skipped = threads.filter((t) => !t.encrypted).length
   const decodeIssues = threads.reduce((n, t) => n + (t.decodeErrors || 0), 0)
-  const issues = errors + failed + unresolved + decodeIssues
+  const nameIssues = threads.filter((t) => t.nameError).length
+  const issues = errors + failed + unresolved + decodeIssues + nameIssues
   const counts = [
     `${threads.length} chats`,
     `${messages.toLocaleString()} messages saved`,
@@ -140,6 +141,10 @@ async function refresh(forceStorage = false) {
   if (failed) counts.push(`${failed} attachments failed`)
   if (unresolved) counts.push(`${unresolved} attachments missing`)
   if (decodeIssues) counts.push(`${decodeIssues} messages need attention`)
+  if (nameIssues)
+    counts.push(
+      `${nameIssues} contact name${nameIssues === 1 ? '' : 's'} unresolved`,
+    )
   if (exported) counts.push(`${exported} attachments in earlier ZIPs`)
   $('counts').textContent = counts.join(' · ')
   if (
@@ -197,6 +202,7 @@ async function refresh(forceStorage = false) {
         ? new Date(thread.oldest).toLocaleString()
         : '—',
       thread.error ||
+        thread.nameError ||
         (thread.decodeErrors
           ? `${thread.decodeErrors} messages could not be fully read`
           : ''),
@@ -205,11 +211,14 @@ async function refresh(forceStorage = false) {
       cell.textContent = text
       row.append(cell)
     }
-    if (thread.error || thread.decodeErrors) row.className = 'error'
+    if (thread.error || thread.decodeErrors || thread.nameError)
+      row.className = 'error'
     body.append(row)
   }
   $('threads').replaceChildren(body)
-  const problemThreads = threads.filter((t) => t.error || t.decodeErrors)
+  const problemThreads = threads.filter(
+    (t) => t.error || t.decodeErrors || t.nameError,
+  )
   const total =
     problemThreads.length + failed + unresolved + Number(!!inventory?.error)
   issueData = { threads, problemThreads, inventory, failed, unresolved, total }
@@ -225,6 +234,7 @@ async function* issueEntries(data) {
   for (const thread of data.problemThreads)
     yield `${thread.name}: ${[
       thread.error,
+      thread.nameError,
       thread.decodeErrors
         ? `${thread.decodeErrors} messages could not be fully read.`
         : '',
@@ -322,6 +332,10 @@ async function retry(fn, waiting = () => {}) {
 async function discover() {
   say('Finding chats…')
   const local = await rpc('localInventory')
+  local.names = {
+    ...(await archive.get('meta', 'names'))?.value,
+    ...local.names,
+  }
   await archive.put('meta', { key: 'names', value: local.names })
   await archive.discover(local.threads)
   let state = await archive.get('meta', 'inventory')
@@ -464,6 +478,35 @@ async function fetchMedia() {
     await refresh()
   }
 }
+async function resolveNames() {
+  const threads = await archive.all('threads')
+  const names = { ...(await archive.get('meta', 'names'))?.value }
+  for (const thread of threads) {
+    if (paused) break
+    if (!thread.encrypted || thread.jid !== `${thread.id}@msgr`) continue
+    if (thread.name && thread.name !== thread.id && !thread.nameError) continue
+    say(`Resolving contact name: ${thread.id}`)
+    try {
+      const cached = names[thread.id]
+      const name =
+        cached && cached !== thread.id
+          ? cached
+          : await rpc('contactName', { id: thread.id })
+      if (!name || name === thread.id)
+        throw Error('Messenger returned no contact name.')
+      names[thread.id] = name
+      await archive.put('meta', { key: 'names', value: names })
+      await archive.put('threads', { ...thread, name, nameError: null })
+    } catch (error) {
+      if (['ACCOUNT_CHANGED', 'DISCONNECTED'].includes(error.code)) throw error
+      await archive.put('threads', {
+        ...thread,
+        nameError: `Contact name lookup failed: ${error.message}`,
+      })
+    }
+  }
+  await refresh()
+}
 async function start() {
   await refresh()
   if (archiveState.complete)
@@ -472,6 +515,7 @@ async function start() {
   const inventory = await archive.get('meta', 'inventory')
   if (!paused && !inventory?.complete) await discover()
   if (!paused) await fetchHistories()
+  if (!paused) await resolveNames()
   if (
     !paused &&
     (issueData.failed ||

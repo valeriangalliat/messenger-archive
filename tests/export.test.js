@@ -6,6 +6,40 @@ import { openArchive } from '../src/db.js'
 import { archiveZip } from '../src/export.js'
 import { readZip } from './zip-reader.js'
 
+test('sender names fall back to direct-chat titles without naming group members after their group', async (t) => {
+  const db = await openArchive(crypto.randomUUID())
+  t.after(() => db.db.close())
+  const threads = [
+    { jid: '123@msgr', id: '123', name: 'Known title' },
+    { jid: '456@msgr', id: '456', name: 'Different title' },
+    { jid: '789@g.us', id: '789', name: 'Group title' },
+  ]
+  await db.discover(threads)
+  await db.put('meta', { key: 'names', value: { 456: 'Contact name' } })
+  for (const thread of threads)
+    await db.commitPage(await db.get('threads', thread.jid), {
+      records: [
+        { key: [thread.jid, 'message'], jid: thread.jid, senderId: thread.id },
+      ],
+      attachments: [],
+      next: null,
+    })
+  const files = await readZip(
+    Buffer.from(await (await archiveZip(db, db.account)).arrayBuffer()),
+  )
+  const index = JSON.parse(files['threads.json'])
+  assert.deepEqual(JSON.parse(files['contacts.json']), {
+    123: 'Known title',
+    456: 'Contact name',
+  })
+  assert.deepEqual(
+    index.map(
+      (t) => JSON.parse(files[`${t.directory}/messages.ndjson`]).senderName,
+    ),
+    ['Known title', 'Contact name', '789'],
+  )
+})
+
 test('ZIP separates conversations, preserves raw records and errors, and leaves stored data unchanged', async () => {
   const db = await openArchive(crypto.randomUUID()),
     C = globalThis.MessengerArchiveCore
