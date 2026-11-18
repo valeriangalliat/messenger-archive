@@ -23,60 +23,6 @@ export function attachmentSource(job) {
     protocolMsgId,
   }
 }
-// Only current attachment fields belong in portable metadata.
-export function attachmentMetadata(job) {
-  const {
-    sources,
-    status,
-    size,
-    mime,
-    nativeMime,
-    sha256,
-    localRevision,
-    savedAt,
-    backupId,
-    path,
-    error,
-    nativeCode,
-    downloadAttempts,
-  } = job
-  return {
-    ...attachmentSource(job),
-    sources: sources?.map(attachmentSource),
-    status,
-    size,
-    mime,
-    nativeMime,
-    sha256,
-    localRevision,
-    savedAt,
-    backupId,
-    path,
-    error,
-    nativeCode,
-    downloadAttempts: downloadAttempts?.map(
-      ({
-        at,
-        operation,
-        jid,
-        messageId,
-        timestamp,
-        error,
-        code,
-        nativeCode,
-      }) => ({
-        at,
-        operation,
-        jid,
-        messageId,
-        timestamp,
-        error,
-        code,
-        nativeCode,
-      }),
-    ),
-  }
-}
 export const sourceKey = (job) =>
   JSON.stringify([
     job.jid,

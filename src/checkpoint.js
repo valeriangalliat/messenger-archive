@@ -1,6 +1,4 @@
 // Portable metadata only: media bytes remain in the baseline and delta ZIPs.
-import { attachmentMetadata } from './attachments.js'
-
 export const checkpointFormat = 'messenger-archive-checkpoint/1'
 export const messageKey = (m) => JSON.stringify(m.key)
 // Local cache markers and display names are not part of a message's content.
@@ -124,9 +122,7 @@ export async function makeCheckpoint(
   )
   for (const m of included)
     messages.set(messageKey(m), { key: m.key, hash: m.hash, backupId })
-  const assets = new Map(
-    (value?.media || []).map((m) => [m.id, attachmentMetadata(m)]),
-  )
+  const assets = new Map((value?.media || []).map((m) => [m.id, m]))
   for (const job of media)
     if (job.status === 'saved' && !mediaMatches(job, assets.get(job.id)))
       assets.set(job.id, {
