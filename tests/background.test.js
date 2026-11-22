@@ -47,7 +47,7 @@ function fixture() {
 
 test('toolbar creates one archive tab and later focuses it without changing its Messenger connection', async () => {
   const f = fixture()
-  await f.click({ id: 11, url: 'https://www.messenger.com/' })
+  await f.click({ id: 11, url: 'https://www.facebook.com/messages/t/123' })
   assert.equal(f.tabs[0].url, `${panel}?tab=11`)
   await f.click({ id: 12, url: 'https://www.facebook.com/messages/' })
   assert.deepEqual(f.calls, [
@@ -60,7 +60,10 @@ test('toolbar creates one archive tab and later focuses it without changing its 
 
 test('simultaneous toolbar clicks create one tab, and closing it permits a fresh tab', async () => {
   const f = fixture()
-  await Promise.all([f.click(), f.click()])
+  await Promise.all([
+    f.click({ id: 11, url: 'https://www.facebook.com/' }),
+    f.click(),
+  ])
   assert.equal(f.tabs.length, 1)
   assert.equal(f.tabs[0].url, panel)
   f.tabs.length = 0

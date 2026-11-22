@@ -59,7 +59,7 @@ try {
     await page.goto(url)
     return page
   }
-  const messenger = await fakePage('https://www.messenger.com/')
+  const messenger = await fakePage('https://www.facebook.com/messages/')
   await messenger.evaluate(async () => {
     const bytes = new TextEncoder().encode('fixture attachment')
     window.__calls = []
@@ -698,7 +698,7 @@ try {
     await panel.evaluate(`document.getElementById('threads').textContent`),
     /Unencrypted — skipped/,
   )
-  const second = await fakePage('https://www.facebook.com/messages/')
+  const second = await fakePage('https://www.facebook.com/messages/t/456')
   await panel.evaluate(`document.getElementById('connect').onclick()`)
   assert.equal(
     await panel.evaluate(`document.querySelector('select') === null`),

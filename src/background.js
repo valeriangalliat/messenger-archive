@@ -9,7 +9,7 @@ async function openArchiveTab(tab) {
     return
   }
   const url = new URL(panel)
-  if (/^https:\/\/(www\.)?(messenger\.com|facebook\.com)\//.test(tab.url || ''))
+  if (/^https:\/\/www\.facebook\.com\/messages(?:[/?#]|$)/.test(tab.url || ''))
     url.searchParams.set('tab', tab.id)
   await api.tabs.create({ url: url.href })
 }

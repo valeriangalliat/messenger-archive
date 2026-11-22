@@ -4,11 +4,7 @@
   "version": "0.2.0",
   "description": "Save your Messenger conversations and attachments.",
   "permissions": ["scripting", "downloads", "unlimitedStorage"],
-  "host_permissions": [
-    "https://www.messenger.com/*",
-    "https://messenger.com/*",
-    "https://www.facebook.com/messages/*"
-  ],
+  "host_permissions": ["https://www.facebook.com/messages/*"],
   "background": {
     "scripts": ["src/background.js"],
     "service_worker": "src/background.js"

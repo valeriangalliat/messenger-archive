@@ -9,7 +9,7 @@
     if (modules.has(name)) return modules.get(name)
     if (typeof globalThis.require !== 'function')
       throw Error(
-        'Messenger module loader unavailable. Open the full Messenger web app and restore history first.',
+        'Messenger module loader unavailable. Open facebook.com/messages and restore your chat history first.',
       )
     let result
     try {

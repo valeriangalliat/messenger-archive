@@ -43,7 +43,8 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
   }
   const account = crypto.randomUUID()
   const thread = { id: '123', jid: '123@msgr', name: 'A chat', encrypted: true }
-  const calls = []
+  const calls = [],
+    opened = []
   let holdHistory,
     enteredHistory,
     persistentIssue = false
@@ -58,7 +59,11 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
     value: { locks: { request: async (_name, _options, run) => run({}) } },
   })
   globalThis.browser = {
-    tabs: { query: async () => [{ id: 1 }], onUpdated: { addListener() {} } },
+    tabs: {
+      create: async ({ url }) => opened.push(url),
+      query: async () => [{ id: 1 }],
+      onUpdated: { addListener() {} },
+    },
     scripting: {
       async executeScript({ args, files }) {
         if (!args) {
@@ -128,6 +133,8 @@ test('archive control resumes checkpoints, updates despite issues, and exposes e
     },
   }
   await import(`../src/panel.js?test=${account}`)
+  await $('openMessenger').onclick()
+  assert.deepEqual(opened, ['https://www.facebook.com/messages/'])
   const db = await openArchive(account)
   t.after(() => db.db.close())
   assert.equal($('start').textContent, 'Start archive')

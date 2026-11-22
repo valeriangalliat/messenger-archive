@@ -8,6 +8,7 @@ import { repairArchive, retryAttachment } from './repair.js'
 const api = globalThis.browser || chrome,
   C = globalThis.MessengerArchiveCore
 const $ = (id) => document.getElementById(id)
+const messengerUrl = 'https://www.facebook.com/messages'
 let archive,
   account,
   tabId,
@@ -634,11 +635,7 @@ async function connect(preferredTab) {
   }, 1000)
   try {
     const tabs = await api.tabs.query({
-      url: [
-        'https://www.messenger.com/*',
-        'https://messenger.com/*',
-        'https://www.facebook.com/messages/*',
-      ],
+      url: [messengerUrl, `${messengerUrl}/*`],
     })
     const selected =
       tabs.find((t) => t.id === preferredTab) ||
@@ -695,8 +692,7 @@ async function connect(preferredTab) {
   }
 }
 $('connect').onclick = () => connect(tabId)
-$('openMessenger').onclick = () =>
-  api.tabs.create({ url: 'https://www.messenger.com/' })
+$('openMessenger').onclick = () => api.tabs.create({ url: `${messengerUrl}/` })
 $('start').onclick = () => {
   if (operation === 'archive') {
     paused = true
@@ -771,7 +767,7 @@ api.tabs.onUpdated.addListener((id, change, tab) => {
     !operation &&
     (id === tabId ||
       (!archive &&
-        /^https:\/\/(?:www\.)?(?:messenger\.com\/|facebook\.com\/messages\/)/.test(
+        /^https:\/\/www\.facebook\.com\/messages(?:[/?#]|$)/.test(
           tab.url || '',
         )))
   )
